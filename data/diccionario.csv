@@ -1,0 +1,197 @@
+﻿tabla,campo,unidad,descripcion
+entidades,entidad,identificador/texto o número indicado,entidad
+entidades,c_entidad,identificador/texto o número indicado,c entidad
+entidades,alias,identificador/texto o número indicado,alias
+entidades,actividad,identificador/texto o número indicado,actividad
+entidades,fecha_corte,fecha ISO,fecha corte
+carteras_bust,cartera_bust,identificador/texto o número indicado,cartera bust
+carteras_bust,nombre,identificador/texto o número indicado,nombre
+macro_historico,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+macro_historico,pib_interanual_pct,puntos porcentuales,pib interanual pct
+macro_historico,desempleo_pct,puntos porcentuales,desempleo pct
+macro_historico,tasa_mn_pct,puntos porcentuales,tasa mn pct
+macro_historico,tasa_me_pct,puntos porcentuales,tasa me pct
+macro_historico,inflacion_pct,puntos porcentuales,inflacion pct
+macro_historico,tc_crc_usd,identificador/texto o número indicado,tc crc usd
+macro_historico,periodo_covid,identificador/texto o número indicado,periodo covid
+macro_historico,indice_inmuebles,identificador/texto o número indicado,indice inmuebles
+macro_historico,indice_vehiculos,identificador/texto o número indicado,indice vehiculos
+macro_historico,indice_titulos,identificador/texto o número indicado,indice titulos
+tipo_cambio,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+tipo_cambio,moneda,identificador/texto o número indicado,moneda
+tipo_cambio,crc_por_unidad,identificador/texto o número indicado,crc por unidad
+escenarios_macro,escenario,identificador/texto o número indicado,escenario
+escenarios_macro,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+escenarios_macro,ano,identificador/texto o número indicado,ano
+escenarios_macro,pib_interanual_pct,puntos porcentuales,pib interanual pct
+escenarios_macro,desempleo_pct,puntos porcentuales,desempleo pct
+escenarios_macro,tasa_mn_pct,puntos porcentuales,tasa mn pct
+escenarios_macro,tasa_me_pct,puntos porcentuales,tasa me pct
+escenarios_macro,inflacion_pct,puntos porcentuales,inflacion pct
+escenarios_macro,tc_crc_usd,identificador/texto o número indicado,tc crc usd
+escenarios_macro,indice_titulos,identificador/texto o número indicado,indice titulos
+escenarios_macro,indice_inmuebles,identificador/texto o número indicado,indice inmuebles
+escenarios_macro,indice_vehiculos,identificador/texto o número indicado,indice vehiculos
+depositos_btb,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+depositos_btb,fecha_corte,fecha ISO,fecha corte
+depositos_btb,deposito_id,identificador/texto o número indicado,deposito id
+depositos_btb,moneda,identificador/texto o número indicado,moneda
+depositos_btb,saldo_bloqueado_mo,unidades moneda original,saldo bloqueado mo
+deudores,deudor_id,identificador/texto o número indicado,Identidad ficticia persistente. Puede tener varias operaciones.
+deudores,entidad,identificador/texto o número indicado,entidad
+deudores,tipo_persona,identificador/texto o número indicado,tipo persona
+deudores,actividad_economica,identificador/texto o número indicado,actividad economica
+deudores,provincia,identificador/texto o número indicado,provincia
+deudores,generador_divisas,identificador/texto o número indicado,generador divisas
+deudores,cobertura_fx_prop,proporción 0–1,Fracción de servicio de deuda en ME cubierta por ingresos ME/cobertura. Dato sintético estable.
+deudores,fecha_registro,fecha ISO,fecha registro
+operaciones_crediticias,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+operaciones_crediticias,entidad,identificador/texto o número indicado,entidad
+operaciones_crediticias,deudor_id,identificador/texto o número indicado,Identidad ficticia persistente. Puede tener varias operaciones.
+operaciones_crediticias,tipo_cartera_origen,identificador/texto o número indicado,tipo cartera origen
+operaciones_crediticias,moneda,identificador/texto o número indicado,moneda
+operaciones_crediticias,fecha_formalizacion,fecha ISO,fecha formalizacion
+operaciones_crediticias,fecha_vencimiento,fecha ISO,fecha vencimiento
+operaciones_crediticias,tasa_efectiva_anual_prop,proporción 0–1,tasa efectiva anual prop
+operaciones_crediticias,back_to_back,identificador/texto o número indicado,back to back
+operaciones_crediticias,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+operaciones_crediticias,saldo_principal_mo,unidades moneda original,"Capital dispuesto, sin intereses ni contingentes, en moneda de la operación."
+operaciones_crediticias,mora_dias,identificador/texto o número indicado,Días transcurridos desde la cuota pendiente más antigua al cierre. No es etiqueta de default.
+operaciones_crediticias,cobro_judicial,identificador/texto o número indicado,cobro judicial
+operaciones_crediticias,fecha_inicio_judicial,fecha ISO,fecha inicio judicial
+operaciones_crediticias,cuenta_grupo,identificador/texto o número indicado,"131 vigente, 132 vencida, 133 judicial, 134 suspendida; simplificación de cuentas contables."
+operaciones_crediticias,modificada_mes,identificador/texto o número indicado,modificada mes
+operaciones_corte,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+operaciones_corte,entidad,identificador/texto o número indicado,entidad
+operaciones_corte,deudor_id,identificador/texto o número indicado,Identidad ficticia persistente. Puede tener varias operaciones.
+operaciones_corte,tipo_cartera_origen,identificador/texto o número indicado,tipo cartera origen
+operaciones_corte,moneda,identificador/texto o número indicado,moneda
+operaciones_corte,fecha_formalizacion,fecha ISO,fecha formalizacion
+operaciones_corte,fecha_vencimiento,fecha ISO,fecha vencimiento
+operaciones_corte,tasa_efectiva_anual_prop,proporción 0–1,tasa efectiva anual prop
+operaciones_corte,back_to_back,identificador/texto o número indicado,back to back
+operaciones_corte,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+operaciones_corte,saldo_principal_mo,unidades moneda original,"Capital dispuesto, sin intereses ni contingentes, en moneda de la operación."
+operaciones_corte,mora_dias,identificador/texto o número indicado,Días transcurridos desde la cuota pendiente más antigua al cierre. No es etiqueta de default.
+operaciones_corte,cobro_judicial,identificador/texto o número indicado,cobro judicial
+operaciones_corte,fecha_inicio_judicial,fecha ISO,fecha inicio judicial
+operaciones_corte,cuenta_grupo,identificador/texto o número indicado,"131 vigente, 132 vencida, 133 judicial, 134 suspendida; simplificación de cuentas contables."
+operaciones_corte,modificada_mes,identificador/texto o número indicado,modificada mes
+operaciones_no_reportadas,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+operaciones_no_reportadas,entidad,identificador/texto o número indicado,entidad
+operaciones_no_reportadas,fecha_ultimo_reporte,fecha ISO,fecha ultimo reporte
+operaciones_no_reportadas,fecha_no_reporte,fecha ISO,fecha no reporte
+operaciones_no_reportadas,motivo_local,identificador/texto o número indicado,"Código académico, no código SICVECA. Consultar catálogo; no inferir cura por desaparición."
+operaciones_no_reportadas,mora_ultima,identificador/texto o número indicado,mora ultima
+operaciones_no_reportadas,judicial_ultimo,identificador/texto o número indicado,judicial ultimo
+operaciones_no_reportadas,capital_final_evento_mo,unidades moneda original,"Saldo inmediatamente antes de la salida, no saldo activo posterior."
+operaciones_no_reportadas,moneda,identificador/texto o número indicado,moneda
+operaciones_no_reportadas,fraccion_saldo_atendido_prop,proporción 0–1,1=cierre total; no confundir cobro parcial con cura.
+cuotas_atrasadas,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+cuotas_atrasadas,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+cuotas_atrasadas,cuota_id,identificador/texto o número indicado,cuota id
+cuotas_atrasadas,fecha_exigible,fecha ISO,fecha exigible
+cuotas_atrasadas,principal_pendiente_mo,unidades moneda original,principal pendiente mo
+cuotas_atrasadas,interes_pendiente_mo,unidades moneda original,interes pendiente mo
+modificaciones,modificacion_id,identificador/texto o número indicado,modificacion id
+modificaciones,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+modificaciones,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+modificaciones,tipo_local,identificador/texto o número indicado,tipo local
+modificaciones,dificultad_financiera,identificador/texto o número indicado,dificultad financiera
+modificaciones,mora_previa_mes,identificador/texto o número indicado,mora previa mes
+modificaciones,mora_posterior,identificador/texto o número indicado,mora posterior
+modificaciones,saldo_previo_mes_mo,unidades moneda original,saldo previo mes mo
+modificaciones,saldo_posterior_mo,unidades moneda original,saldo posterior mo
+modificaciones,motivo_covid,identificador/texto o número indicado,motivo covid
+modificaciones,fecha_vencimiento_anterior,fecha ISO,fecha vencimiento anterior
+modificaciones,fecha_vencimiento_nueva,fecha ISO,fecha vencimiento nueva
+vinculos_refinanciacion,operacion_anterior_id,identificador/texto o número indicado,operacion anterior id
+vinculos_refinanciacion,operacion_nueva_id,identificador/texto o número indicado,operacion nueva id
+vinculos_refinanciacion,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+vinculos_refinanciacion,motivo_local,identificador/texto o número indicado,"Código académico, no código SICVECA. Consultar catálogo; no inferir cura por desaparición."
+medidas_covid,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+medidas_covid,fecha_inicio,fecha ISO,fecha inicio
+medidas_covid,fecha_fin,fecha ISO,fecha fin
+medidas_covid,medida,identificador/texto o número indicado,medida
+medidas_covid,origen,identificador/texto o número indicado,origen
+garantias_operaciones,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+garantias_operaciones,garantia_id,identificador/texto o número indicado,garantia id
+garantias_operaciones,fecha_corte,fecha ISO,fecha corte
+garantias_operaciones,peso_asignacion_prop,proporción 0–1,Fracción del valor del bien atribuible a la operación; suma por garantía <=1.
+garantias_operaciones,monto_maximo_cobertura_mo,unidades moneda original,monto maximo cobertura mo
+garantias_operaciones,moneda,identificador/texto o número indicado,moneda
+garantias_reales,garantia_id,identificador/texto o número indicado,garantia id
+garantias_reales,entidad,identificador/texto o número indicado,entidad
+garantias_reales,tipo,identificador/texto o número indicado,tipo
+garantias_reales,moneda,identificador/texto o número indicado,moneda
+garantias_reales,valor_avaluo_mo,unidades moneda original,valor avaluo mo
+garantias_reales,fecha_avaluo,fecha ISO,fecha avaluo
+garantias_reales,fecha_corte,fecha ISO,fecha corte
+garantias_valores,garantia_id,identificador/texto o número indicado,garantia id
+garantias_valores,entidad,identificador/texto o número indicado,entidad
+garantias_valores,tipo,identificador/texto o número indicado,tipo
+garantias_valores,moneda,identificador/texto o número indicado,moneda
+garantias_valores,valor_avaluo_mo,unidades moneda original,valor avaluo mo
+garantias_valores,fecha_avaluo,fecha ISO,fecha avaluo
+garantias_valores,fecha_corte,fecha ISO,fecha corte
+garantias_facturas_cedidas,garantia_id,identificador/texto o número indicado,garantia id
+garantias_facturas_cedidas,entidad,identificador/texto o número indicado,entidad
+garantias_facturas_cedidas,tipo,identificador/texto o número indicado,tipo
+garantias_facturas_cedidas,moneda,identificador/texto o número indicado,moneda
+garantias_facturas_cedidas,valor_avaluo_mo,unidades moneda original,valor avaluo mo
+garantias_facturas_cedidas,fecha_avaluo,fecha ISO,fecha avaluo
+garantias_facturas_cedidas,fecha_corte,fecha ISO,fecha corte
+garantias_mobiliarias,garantia_id,identificador/texto o número indicado,garantia id
+garantias_mobiliarias,entidad,identificador/texto o número indicado,entidad
+garantias_mobiliarias,tipo,identificador/texto o número indicado,tipo
+garantias_mobiliarias,moneda,identificador/texto o número indicado,moneda
+garantias_mobiliarias,valor_avaluo_mo,unidades moneda original,valor avaluo mo
+garantias_mobiliarias,fecha_avaluo,fecha ISO,fecha avaluo
+garantias_mobiliarias,fecha_corte,fecha ISO,fecha corte
+gravamenes,garantia_id,identificador/texto o número indicado,garantia id
+gravamenes,grado,identificador/texto o número indicado,grado
+gravamenes,acreedor_entidad,identificador/texto o número indicado,acreedor entidad
+gravamenes,monto_preferente_mo,unidades moneda original,monto preferente mo
+gravamenes,moneda,identificador/texto o número indicado,moneda
+bienes_realizables,bien_id,identificador/texto o número indicado,bien id
+bienes_realizables,entidad,identificador/texto o número indicado,entidad
+bienes_realizables,tipo,identificador/texto o número indicado,tipo
+bienes_realizables,fecha_adjudicacion,fecha ISO,fecha adjudicacion
+bienes_realizables,valor_adjudicacion_crc,CRC,valor adjudicacion crc
+bienes_realizables,fecha_fin_observacion,fecha ISO,fecha fin observacion
+bienes_realizables,vendido,identificador/texto o número indicado,vendido
+operaciones_bienes_realizables,bien_id,identificador/texto o número indicado,bien id
+operaciones_bienes_realizables,operacion_id,identificador/texto o número indicado,Identidad ficticia persistente. Un refinanciamiento puede cambiarla; consultar vínculos.
+operaciones_bienes_realizables,fraccion_asignada_prop,proporción 0–1,fraccion asignada prop
+ventas_bienes,bien_id,identificador/texto o número indicado,bien id
+ventas_bienes,fecha_venta,fecha ISO,fecha venta
+ventas_bienes,venta_bruta_crc,CRC,venta bruta crc
+ventas_bienes,gasto_venta_crc,CRC,gasto venta crc
+flujos_recuperacion,bien_id,identificador/texto o número indicado,bien id
+flujos_recuperacion,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+flujos_recuperacion,concepto,identificador/texto o número indicado,concepto
+flujos_recuperacion,importe_crc,CRC,importe crc
+flujos_recuperacion,sentido,identificador/texto o número indicado,sentido
+bienes_no_reportados,bien_id,identificador/texto o número indicado,bien id
+bienes_no_reportados,fecha_no_reporte,fecha ISO,fecha no reporte
+bienes_no_reportados,motivo_local,identificador/texto o número indicado,"Código académico, no código SICVECA. Consultar catálogo; no inferir cura por desaparición."
+catalogo_salidas,motivo_local,identificador/texto o número indicado,"Código académico, no código SICVECA. Consultar catálogo; no inferir cura por desaparición."
+catalogo_salidas,significado,identificador/texto o número indicado,significado
+catalogo_salidas,referencia,identificador/texto o número indicado,referencia
+financieros_entidad,entidad,identificador/texto o número indicado,entidad
+financieros_entidad,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+financieros_entidad,activos_crc,CRC,activos crc
+financieros_entidad,pasivos_crc,CRC,pasivos crc
+financieros_entidad,patrimonio_crc,CRC,patrimonio crc
+financieros_entidad,cartera_principal_crc,CRC,cartera principal crc
+financieros_entidad,estimacion_registrada_crc,CRC,estimacion registrada crc
+financieros_entidad,resultado_anual_crc,CRC,resultado anual crc
+financieros_deudores,deudor_id,identificador/texto o número indicado,Identidad ficticia persistente. Puede tener varias operaciones.
+financieros_deudores,fecha,fecha ISO,Cierre mensual de observación. No usar datos posteriores al corte para estimación.
+financieros_deudores,fecha_disponible,fecha ISO,Fecha de disponibilidad del dato. No usar estados financieros antes de esta fecha.
+financieros_deudores,activos_crc,CRC,activos crc
+financieros_deudores,pasivos_crc,CRC,pasivos crc
+financieros_deudores,patrimonio_crc,CRC,patrimonio crc
+financieros_deudores,ingresos_crc,CRC,ingresos crc
+financieros_deudores,ebitda_crc,CRC,ebitda crc
+financieros_deudores,gasto_intereses_crc,CRC,gasto intereses crc

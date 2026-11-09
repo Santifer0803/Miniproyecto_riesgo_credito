@@ -299,7 +299,7 @@ df_vinculos_refinanciacion = dfs["vinculos_refinanciacion"]
 df_financieros_entidad = dfs["financieros_entidad"]
 
 # Base final de datos financieros de los deudores
-df_financieros_entidad = dfs["financieros_deudores"]
+df_financieros_deudores = dfs["financieros_deudores"]
 
 # Base final de operaciones crediticas de las entidades
 df_operaciones_crediticias = dfs["operaciones_crediticias"]

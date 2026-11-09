@@ -71,7 +71,7 @@ dfs["operaciones_bienes_realizables"] = dfs[
 dfs["operaciones_bienes_realizables"] = dfs[
     "operaciones_bienes_realizables"
 ].merge(
-    dfs["operaciones_crediticias"][["operacion_id", "moneda"]],
+    dfs["operaciones_crediticias"][["operacion_id", "moneda"]].drop_duplicates("operacion_id"),
     on="operacion_id",
     how="left",
 )

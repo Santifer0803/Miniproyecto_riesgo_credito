@@ -2481,29 +2481,1601 @@ del variables_eliminar, nombre
 
 # %%
 
-""" Pérdida esperada """
+"""4. Pérdida esperada"""
 
-# 
+# En esta parte ya no volvemos a estimar la PD, la PC ni las recuperaciones.
+# Esos cálculos los hicieron las secciones anteriores y están reunidos en
+# insumos_secciones_4_5. Lo que nos faltaba era construir la exposición que
+# corresponde a cada año y aplicar la fórmula de pérdida esperada del BUST.
+# Para 2026 hay que separar créditos normales y dudosos a diciembre de 2025;
+# para 2027 y 2028 se utiliza la EAD proyectada del año anterior.
+
+
+def construir_saldos_iniciales_pe(operaciones, tipos_cambio, fecha="2025-12-31"):
+    """Obtiene CN, CD y número de operaciones por entidad y cartera BUST.
+
+    Partimos de la misma función de clasificación que se usó para PD y PC.
+    De esta manera el inventario excluye back-to-back, la categoría Otro y
+    las cancelaciones que la propia función descarta. No creamos otra regla
+    distinta solo para calcular las pérdidas.
+
+    El resultado incluye tanto saldos como cantidades; las cantidades nos
+    servirán más adelante para construir una medida relativa por operación.
+    """
+
+    # Esta función ya existía en el código de nuestros compañeros. Nos devuelve
+    # una fila por operación vigente en el corte y una etiqueta estado_t0:
+    # "Normal" o "Dudoso", según mora, cobro judicial y modificaciones.
+    inventario = clasificar_inventario_inicial_crediticio(operaciones, fecha)
+
+    # Copiamos solo los tipos de cambio del corte. pd.Timestamp convierte el
+    # texto de la fecha en una fecha que pandas puede comparar correctamente.
+    fx = tipos_cambio.loc[
+        tipos_cambio["fecha"].eq(pd.Timestamp(fecha)),
+        ["moneda", "crc_por_unidad"],
+    ].copy()
+
+    # validate evita que un tipo de cambio repetido multiplique accidentalmente
+    # las filas de créditos cuando hagamos el merge. La relación es varios
+    # créditos para una sola tasa de cambio por moneda.
+    if fx.duplicated("moneda").any():
+        raise ValueError("Hay más de un tipo de cambio por moneda en 2025.")
+
+    inventario = inventario.merge(
+        fx, on="moneda", how="left", validate="many_to_one"
+    )
+    if inventario["crc_por_unidad"].isna().any():
+        raise ValueError("Hay créditos de 2025 sin tipo de cambio.")
+
+    # saldo_principal_mo está en la moneda original. Multiplicarlo por la
+    # cantidad de colones por unidad permite sumar MN y ME sin mezclar monedas.
+    inventario["saldo_crc"] = (
+        inventario["saldo_principal_mo"] * inventario["crc_por_unidad"]
+    )
+    if (inventario["saldo_crc"] < 0).any() or not np.isfinite(
+        inventario["saldo_crc"].to_numpy(dtype=float)
+    ).all():
+        raise ValueError("El inventario inicial contiene saldos inválidos.")
+
+    # Primero sumamos por estado. groupby agrupa las filas que comparten
+    # entidad, cartera y estado; agg nos deja calcular varias estadísticas.
+    # nunique cuenta operaciones distintas, no simplemente número de filas.
+    resumen = (
+        inventario.groupby(
+            ["entidad", "categorias_bust", "estado_t0"], as_index=False
+        )
+        .agg(saldo_crc=("saldo_crc", "sum"), n_operaciones=("operacion_id", "nunique"))
+    )
+
+    # pivot_table convierte los valores "Normal" y "Dudoso" en columnas.
+    # fill_value=0 es necesario cuando una cartera no tiene algún estado.
+    saldos = resumen.pivot_table(
+        index=["entidad", "categorias_bust"],
+        columns="estado_t0",
+        values="saldo_crc",
+        aggfunc="sum",
+        fill_value=0,
+    ).rename(columns={"Normal": "CN_2025_crc", "Dudoso": "CD_2025_crc"})
+
+    # Hacemos lo mismo con el número de operaciones. Reindex crea una columna
+    # de ceros si el estado no existiera en toda la base; así no falla la suma.
+    conteos = resumen.pivot_table(
+        index=["entidad", "categorias_bust"],
+        columns="estado_t0",
+        values="n_operaciones",
+        aggfunc="sum",
+        fill_value=0,
+    ).rename(columns={"Normal": "N_normales_2025", "Dudoso": "N_dudosas_2025"})
+
+    saldos = saldos.reindex(
+        columns=["CN_2025_crc", "CD_2025_crc"], fill_value=0
+    )
+    conteos = conteos.reindex(
+        columns=["N_normales_2025", "N_dudosas_2025"], fill_value=0
+    )
+    saldos = saldos.join(conteos).reset_index()
+    saldos["saldo_total_2025_crc"] = (
+        saldos["CN_2025_crc"] + saldos["CD_2025_crc"]
+    )
+    saldos["N_total_2025"] = (
+        saldos["N_normales_2025"] + saldos["N_dudosas_2025"]
+    )
+
+    # Confirmamos que no dejamos fuera alguna operación mientras agregábamos.
+    if not np.isclose(saldos["saldo_total_2025_crc"].sum(),
+                      inventario["saldo_crc"].sum(), rtol=0, atol=1):
+        raise ValueError("Los saldos no concilian con el inventario inicial.")
+    if saldos["N_total_2025"].sum() != inventario["operacion_id"].nunique():
+        raise ValueError("Los conteos no concilian con el inventario inicial.")
+    return saldos, inventario
+
+
+def calcular_perdida_esperada(insumos, saldos_2025):
+    """Aplica las fórmulas de la sección 4.2 del documento para 2026–2028.
+
+    Todas las tasas PD, PC, LGL y LGD ya son proporciones entre 0 y 1.
+    No hay que dividirlas otra vez entre 100. Los resultados monetarios se
+    expresan en colones y se calculan por entidad, cartera, año y escenario.
+    """
+
+    claves = ["entidad", "categorias_bust"]
+    claves_completas = claves + ["escenario", "ano"]
+    datos = insumos.copy()
+
+    # Con merge incorporamos CN y CD de 2025 a cada uno de los escenarios y
+    # años. many_to_one exige un único inventario para cada entidad/cartera.
+    datos = datos.merge(saldos_2025, on=claves, how="left",
+                        validate="many_to_one")
+    if datos.duplicated(claves_completas).any():
+        raise ValueError("Hay combinaciones duplicadas de entidad, cartera, año y escenario.")
+    if datos[["CN_2025_crc", "CD_2025_crc", "N_total_2025"]].isna().any().any():
+        raise ValueError("Hay proyecciones sin saldos o conteos de diciembre 2025.")
+    if set(datos["ano"]) != {2026, 2027, 2028}:
+        raise ValueError("Las proyecciones deben cubrir 2026, 2027 y 2028.")
+
+    # La conciliación compara el saldo de nuestro inventario con el usado para
+    # calcular LGL. En la revisión previa las 21 carteras coincidieron con una
+    # diferencia máxima minúscula, propia de los números de punto flotante.
+    if not np.allclose(datos["saldo_total_2025_crc"],
+                       datos["saldo_cartera_crc"], atol=1, rtol=0):
+        raise ValueError("El inventario no coincide con el saldo de la LGL.")
+
+    # Revisamos antes de calcular: ninguna tasa puede ser negativa ni superar
+    # 100 %. También cuidamos que las exposiciones sean números finitos.
+    for columna in ["PD", "PC", "LGL_cartera", "LGD"]:
+        if not datos[columna].between(0, 1).all():
+            raise ValueError(f"Hay valores fuera de [0,1] en {columna}.")
+    for columna in ["saldo_proyectado_mn", "saldo_total_2025_crc"]:
+        if (datos[columna] < 0).any() or not np.isfinite(datos[columna]).all():
+            raise ValueError(f"La exposición {columna} tiene valores inválidos.")
+
+    # Ordenar antes de shift es esencial: shift(1) toma la fila anterior del
+    # mismo grupo. Por ejemplo, para 2027 necesitamos el saldo de 2026 del
+    # MISMO escenario, entidad y cartera, nunca el de otra institución.
+    datos = datos.sort_values(["escenario", "entidad", "categorias_bust", "ano"])
+    grupo = datos.groupby(["escenario"] + claves, sort=False)
+    datos["EAD_ano_anterior_crc"] = grupo["EAD_proyectada_mn"].shift(1)
+
+    # En 2026 aún no existe una proyección del 2025 dentro de la tabla, así
+    # que usamos la exposición observada del inventario inicial.
+    es_2026 = datos["ano"].eq(2026)
+    datos.loc[es_2026, "EAD_ano_anterior_crc"] = datos.loc[
+        es_2026, "saldo_total_2025_crc"
+    ]
+    if datos["EAD_ano_anterior_crc"].isna().any():
+        raise ValueError("Falta exposición del año anterior para alguna proyección.")
+
+    # Primer año: una operación que era normal todavía puede deteriorarse,
+    # por eso usamos PD * LGD * CN. Si ya era dudosa, el documento no vuelve
+    # a multiplicarla por PD; únicamente LGD * CD.
+    datos["EL_normal_crc"] = np.where(
+        es_2026,
+        datos["PD"] * datos["LGD"] * datos["CN_2025_crc"],
+        0.0,
+    )
+    datos["EL_dudosa_crc"] = np.where(
+        es_2026, datos["LGD"] * datos["CD_2025_crc"], 0.0
+    )
+
+    # Para 2027 y 2028 seguimos la fórmula literal de Santiago/BUST:
+    # PD del año * LGD del año * EAD al cierre del año anterior. Esa fórmula
+    # no vuelve a separar créditos dudosos; esto se documenta como limitación.
+    datos["EL_futura_crc"] = np.where(
+        ~es_2026,
+        datos["PD"] * datos["LGD"] * datos["EAD_ano_anterior_crc"],
+        0.0,
+    )
+    datos["EL_crc"] = (
+        datos["EL_normal_crc"] + datos["EL_dudosa_crc"]
+        + datos["EL_futura_crc"]
+    )
+
+    # El programa proyecta saldos, pero no el número futuro de operaciones.
+    # Para la PE promedio por operación tomamos un supuesto muy explícito:
+    # el tamaño promedio de un crédito se mantiene constante por segmento,
+    # así que el número esperado crece en la misma proporción que el saldo.
+    # No redondeamos porque es una estimación de cantidad, no un censo real.
+    datos["N_proyectadas"] = np.where(
+        datos["saldo_total_2025_crc"] > 0,
+        datos["N_total_2025"] * datos["EAD_proyectada_mn"]
+        / datos["saldo_total_2025_crc"],
+        0.0,
+    )
+    datos["EL_por_operacion_crc"] = np.where(
+        datos["N_proyectadas"] > 0,
+        datos["EL_crc"] / datos["N_proyectadas"],
+        np.nan,
+    )
+    datos["EL_sobre_EAD_pct"] = np.where(
+        datos["EAD_ano_anterior_crc"] > 0,
+        100 * datos["EL_crc"] / datos["EAD_ano_anterior_crc"],
+        0.0,
+    )
+
+    # Como PD y LGD están entre 0 y 1, la pérdida no debería superar la
+    # exposición usada en la fórmula ni resultar negativa.
+    tolerancia = 1.0
+    if (datos["EL_crc"] < -tolerancia).any() or (
+        datos["EL_crc"] > datos["EAD_ano_anterior_crc"] + tolerancia
+    ).any():
+        raise ValueError("Hay pérdidas esperadas negativas o superiores a la EAD.")
+
+    # Al terminar, dejamos las filas ordenadas para que los gráficos y tablas
+    # sean fáciles de leer y no dependan del orden accidental de los merges.
+    return datos.sort_values(claves_completas).reset_index(drop=True)
+
+
+def incorporar_informacion_financiera(datos_el, financieros):
+    """Añade patrimonio y estimaciones registradas del cierre de 2025.
+
+    El patrimonio se mantiene fijo como referencia para los tres años:
+    NO estamos proyectando patrimonio ni haciendo un modelo de solvencia.
+    """
+    f = financieros.loc[
+        pd.to_datetime(financieros["fecha"]).eq(pd.Timestamp("2025-12-31")),
+        ["entidad", "patrimonio_crc", "estimacion_registrada_crc",
+         "cartera_principal_crc"],
+    ].copy()
+    if f["entidad"].duplicated().any():
+        raise ValueError("La base financiera repite entidades para diciembre de 2025.")
+
+    resultado = datos_el.merge(f, on="entidad", how="left", validate="many_to_one")
+    if resultado[["patrimonio_crc", "estimacion_registrada_crc"]].isna().any().any():
+        raise ValueError("Faltan datos financieros para alguna entidad.")
+    if (resultado["patrimonio_crc"] <= 0).any():
+        raise ValueError("Hay patrimonios no positivos; revisar EL/patrimonio.")
+
+    # Dividir la EL entre patrimonio nos permite comparar instituciones de
+    # tamaños distintos. A nivel de cartera es la pérdida de ESA cartera frente
+    # al patrimonio completo de su entidad: no es un patrimonio por segmento.
+    resultado["EL_sobre_patrimonio_pct"] = (
+        100 * resultado["EL_crc"] / resultado["patrimonio_crc"]
+    )
+    return resultado
+
+
+def calcular_detalle_operaciones_2026(inventario, datos_el):
+    """Desagrega la pérdida esperada de 2026 a operaciones observadas en 2025.
+
+    En 2026 esta desagregación es directa porque sí tenemos estados y saldos
+    de cada operación en el inventario inicial. NO inventamos operaciones
+    futuras para 2027 y 2028. La PD y LGD son las tasas del segmento: no son
+    modelos individuales de comportamiento del deudor.
+    """
+    claves = ["entidad", "categorias_bust"]
+    tasas = datos_el.loc[
+        datos_el["ano"].eq(2026),
+        claves + ["escenario", "PD", "LGD"],
+    ].copy()
+
+    # El cruce con los dos escenarios genera dos filas por operación inicial.
+    detalle = inventario[
+        claves + ["operacion_id", "estado_t0", "saldo_crc"]
+    ].merge(tasas, on=claves, how="left", validate="many_to_many")
+    if detalle[["PD", "LGD"]].isna().any().any():
+        raise ValueError("Faltan tasas para algunas operaciones en 2026.")
+    detalle["EL_operacion_crc"] = np.where(
+        detalle["estado_t0"].eq("Normal"),
+        detalle["saldo_crc"] * detalle["PD"] * detalle["LGD"],
+        detalle["saldo_crc"] * detalle["LGD"],
+    )
+
+    # Verificamos que la suma del detalle produzca exactamente el cálculo
+    # agregado del segmento. Si no, puede haber un merge duplicado o una tasa
+    # asignada incorrectamente y no conviene seguir al dashboard.
+    agrupado = detalle.groupby(claves + ["escenario"], as_index=False)[
+        "EL_operacion_crc"
+    ].sum()
+    referencia = datos_el.loc[datos_el["ano"].eq(2026),
+                              claves + ["escenario", "EL_crc"]]
+    revision = referencia.merge(agrupado, on=claves + ["escenario"],
+                                how="left", validate="one_to_one")
+    if revision["EL_operacion_crc"].isna().any() or not np.allclose(
+        revision["EL_crc"], revision["EL_operacion_crc"], atol=1, rtol=1e-12
+    ):
+        raise ValueError("El detalle de operaciones no concilia con EL 2026.")
+    return detalle
+
+
+# Estos objetos quedan disponibles para las siguientes secciones, Shiny y
+# para consultar con Python -i app.py. No imprimimos las miles de filas.
+saldos_iniciales_2025, inventario_el_2025 = construir_saldos_iniciales_pe(
+    df_operaciones_crediticias, df_tipo_cambio
+)
+resultados_perdida_esperada = calcular_perdida_esperada(
+    insumos_secciones_4_5, saldos_iniciales_2025
+)
+resultados_perdida_esperada = incorporar_informacion_financiera(
+    resultados_perdida_esperada, df_financieros_entidad
+)
+pe_operaciones_2026 = calcular_detalle_operaciones_2026(
+    inventario_el_2025, resultados_perdida_esperada
+)
 
 # %%
 
-"""" Escenarios y sensibilidad """
+"""5. Escenarios y sensibilidad"""
 
-# 
+# La comparación Base vs. Adverso se calcula a partir de las mismas pérdidas
+# que acabamos de obtener. No ajustamos ni recalibramos PD y PC aquí, porque
+# hacerlo ya sería cambiar los modelos de nuestros compañeros.
+# Para sensibilidad elegimos un solo supuesto: un RECORTE ADICIONAL a las
+# recuperaciones netas, por encima del ajuste macroeconómico ya incluido.
+# Es decir, recorte=0 reproduce exactamente el modelo recibido.
 
+
+def calcular_sensibilidad_recuperaciones(datos_el, recorte_pct=0):
+    """Recalcula LGL, LGD y EL si las recuperaciones netas bajan cierto %.
+
+    Ejemplo: 20 significa que multiplicamos las recuperaciones originales
+    por 0.80. NO es una caída de 20 puntos porcentuales de LGL y NO volvemos
+    a descontar por segunda vez los mismos gastos o la tasa de cura.
+    """
+    recorte_pct = float(recorte_pct)
+    if not (0 <= recorte_pct <= 100):
+        raise ValueError("El recorte de recuperación debe estar entre 0 y 100 %.")
+    d = datos_el.copy()
+
+    # En la sección 3 ya se limitó la recuperación al saldo de la cartera,
+    # y esa es la cantidad que vamos a estresar. clip evita resultados fuera
+    # del intervalo [0, saldo] si apareciera alguna diferencia numérica.
+    recuperacion_base = d["recuperacion_cartera_crc"].clip(lower=0)
+    if (recuperacion_base > d["saldo_cartera_crc"] + 1).any():
+        raise ValueError("Las recuperaciones superan los saldos de cartera.")
+    d["recuperacion_sensible_crc"] = recuperacion_base * (1 - recorte_pct / 100)
+
+    # Calculamos de nuevo la proporción no recuperable. En una cartera sin
+    # recuperaciones, la LGL se mantiene en 1: no inventamos cobros.
+    d["LGL_sensible"] = np.where(
+        d["saldo_cartera_crc"] > 0,
+        1 - d["recuperacion_sensible_crc"] / d["saldo_cartera_crc"],
+        1.0,
+    )
+    d["LGL_sensible"] = d["LGL_sensible"].clip(lower=0, upper=1)
+    d["LGD_sensible"] = d["LGL_sensible"] * (1 - d["PC"])
+
+    # Reutilizamos las dos fórmulas, sin modificar las exposiciones ni las PD.
+    es_2026 = d["ano"].eq(2026)
+    d["EL_sensible_crc"] = np.where(
+        es_2026,
+        d["LGD_sensible"] * (
+            d["PD"] * d["CN_2025_crc"] + d["CD_2025_crc"]
+        ),
+        d["PD"] * d["LGD_sensible"] * d["EAD_ano_anterior_crc"],
+    )
+    d["incremento_EL_crc"] = d["EL_sensible_crc"] - d["EL_crc"]
+    d["incremento_EL_pct"] = np.where(
+        d["EL_crc"] > 0, 100 * d["incremento_EL_crc"] / d["EL_crc"], np.nan
+    )
+
+    # A recorte cero deben coincidir todas las LGD y EL calculadas antes.
+    # También esperamos que recortar recuperaciones no reduzca las pérdidas.
+    if recorte_pct == 0 and (
+        not np.allclose(d["LGD_sensible"], d["LGD"], rtol=1e-10, atol=1e-12)
+        or not np.allclose(d["EL_sensible_crc"], d["EL_crc"], rtol=1e-10, atol=1)
+    ):
+        raise ValueError("La sensibilidad 0 % no reproduce el modelo original.")
+    if (d["incremento_EL_crc"] < -1).any() or (
+        d["EL_sensible_crc"] > d["EAD_ano_anterior_crc"] + 1
+    ).any():
+        raise ValueError("La sensibilidad produjo una pérdida fuera de límites.")
+    return d
+
+
+def resumir_el(datos, columnas, columna_pe="EL_crc"):
+    """Suma pérdidas y exposición sin promediar tasas simples por cartera.
+
+    groupby separa los grupos pedidos y agg suma las magnitudes monetarias.
+    Dividir los totales de EL/EAD produce un indicador ponderado por exposición;
+    es más representativo que calcular un promedio simple de porcentajes.
+    """
+    if not columnas:
+        raise ValueError("Es necesario indicar al menos una columna de agrupación.")
+    resumen = datos.groupby(columnas, as_index=False).agg(
+        EL_crc=(columna_pe, "sum"),
+        EAD_base_crc=("EAD_ano_anterior_crc", "sum"),
+        N_proyectadas=("N_proyectadas", "sum"),
+    )
+    resumen["EL_EAD_pct"] = np.where(
+        resumen["EAD_base_crc"] > 0,
+        100 * resumen["EL_crc"] / resumen["EAD_base_crc"],
+        0.0,
+    )
+    return resumen
+
+
+def comparar_escenarios_el(datos):
+    """Compara las pérdidas de Base y Adverso, manteniendo el mismo segmento."""
+    claves = ["ano", "entidad", "categorias_bust"]
+    base = datos.loc[datos["escenario"].eq("Base"),
+                     claves + ["EL_crc"]].rename(columns={"EL_crc": "EL_Base_crc"})
+    adverso = datos.loc[datos["escenario"].eq("Adverso"),
+                        claves + ["EL_crc"]].rename(columns={"EL_crc": "EL_Adverso_crc"})
+    tabla = base.merge(adverso, on=claves, how="outer", validate="one_to_one")
+    if tabla[["EL_Base_crc", "EL_Adverso_crc"]].isna().any().any():
+        raise ValueError("Falta Base o Adverso para comparar algún segmento.")
+    tabla["Diferencia_crc"] = tabla["EL_Adverso_crc"] - tabla["EL_Base_crc"]
+    tabla["Diferencia_pct"] = np.where(
+        tabla["EL_Base_crc"] > 0,
+        100 * tabla["Diferencia_crc"] / tabla["EL_Base_crc"],
+        np.nan,
+    )
+    # Un adverso menor que el base no se corrige ni se oculta: lo dejamos en
+    # los resultados para revisarlo y justificarlo con las trayectorias macro.
+    return tabla.sort_values(claves).reset_index(drop=True)
+
+
+# Los cuadros se preparan aquí, antes de dibujar, para que cualquier persona
+# pueda auditarlos también fuera del dashboard.
+pe_por_entidad = resumir_el(
+    resultados_perdida_esperada, ["escenario", "ano", "entidad"]
+)
+pe_por_cartera = resumir_el(
+    resultados_perdida_esperada, ["escenario", "ano", "categorias_bust"]
+)
+pe_por_segmento = resumir_el(
+    resultados_perdida_esperada,
+    ["escenario", "ano", "entidad", "categorias_bust"],
+)
+pe_consolidada = resumir_el(
+    resultados_perdida_esperada, ["escenario", "ano"]
+)
+comparacion_base_adverso = comparar_escenarios_el(resultados_perdida_esperada)
+sensibilidad_sin_ajuste = calcular_sensibilidad_recuperaciones(
+    resultados_perdida_esperada, recorte_pct=0
+)
+
+# Comprobación de suma: agregar las 21 carteras debe dar exactamente el mismo
+# total del conjunto A-E para cada año y escenario.
+revision_agregacion = pe_por_segmento.groupby(
+    ["escenario", "ano"], as_index=False
+)["EL_crc"].sum().merge(
+    pe_consolidada[["escenario", "ano", "EL_crc"]],
+    on=["escenario", "ano"], validate="one_to_one", suffixes=("_detalle", "_total")
+)
+if not np.allclose(
+    revision_agregacion["EL_crc_detalle"], revision_agregacion["EL_crc_total"],
+    rtol=1e-12, atol=1
+):
+    raise ValueError("La suma de las carteras no coincide con el conjunto A-E.")
+
+# El cuadro macro resume cada año mediante la media de los cuatro trimestres.
+# Lo utilizamos para explicar las trayectorias de los escenarios, pero sin
+# afirmar que sea una relación causal demostrada para todas las variables.
+macro_para_dashboard = (
+    df_macro_proyectado.groupby(["escenario", "ano"], as_index=False)
+    [["pib_interanual_pct", "desempleo_pct", "tasa_mn_pct", "tasa_me_pct",
+      "tc_crc_usd", "indice_inmuebles", "indice_vehiculos", "indice_titulos"]]
+    .mean()
+)
 
 # %%
 
+"""Datos históricos y auditoría que alimentan el dashboard"""
+
+# El histórico que mostramos no es otra simulación. Sale de las observaciones
+# mensuales que ya estaban en la base de operaciones. Las filtramos con el
+# mismo universo BUST que usamos en los cálculos de la PE: dejamos fuera las
+# operaciones back-to-back y las etiquetadas como Otro.
+def preparar_cartera_historica_dashboard(operaciones, tipos_cambio):
+    """Resume saldos y cantidades mensuales de 2019 a 2025 en colones.
+
+    Mantenemos una fila por fecha, entidad y cartera BUST. El saldo es un
+    inventario en un momento concreto; sumar distintos meses produciría una
+    cifra engañosa, porque estaríamos contando varias veces el mismo crédito.
+    """
+    campos = ["fecha", "operacion_id", "entidad", "categorias_bust",
+              "moneda", "back_to_back", "saldo_principal_mo"]
+    datos = operaciones[campos].copy()
+    datos["fecha"] = pd.to_datetime(datos["fecha"])
+    datos = datos.loc[
+        datos["fecha"].between("2019-01-01", "2025-12-31")
+        & datos["back_to_back"].eq(0)
+        & datos["categorias_bust"].ne("Otro")
+    ].copy()
+    if datos.duplicated(["fecha", "operacion_id"]).any():
+        raise ValueError("El histórico tiene operaciones repetidas en un mismo mes.")
+
+    fx = tipos_cambio[["fecha", "moneda", "crc_por_unidad"]].copy()
+    fx["fecha"] = pd.to_datetime(fx["fecha"])
+    if fx.duplicated(["fecha", "moneda"]).any():
+        raise ValueError("Se repiten fechas y monedas en la tabla de tipo de cambio.")
+
+    # La unión por fecha Y moneda evita aplicar un tipo de cambio de otro mes.
+    datos = datos.merge(fx, on=["fecha", "moneda"], how="left",
+                        validate="many_to_one")
+    if datos["crc_por_unidad"].isna().any():
+        raise ValueError("Falta tipo de cambio en una observación histórica.")
+    datos["saldo_crc"] = (datos["saldo_principal_mo"]
+                          * datos["crc_por_unidad"])
+    if not np.isfinite(datos["saldo_crc"]).all() or (datos["saldo_crc"] < 0).any():
+        raise ValueError("Hay saldos históricos negativos o no numéricos.")
+
+    # groupby agrupa las observaciones que comparten estas tres columnas.
+    # agg permite pedir una suma de saldo y un conteo distinto de operaciones.
+    mensual = datos.groupby(
+        ["fecha", "entidad", "categorias_bust"], as_index=False
+    ).agg(saldo_crc=("saldo_crc", "sum"),
+          operaciones=("operacion_id", "nunique"))
+    mensual["ano"] = mensual["fecha"].dt.year
+    mensual = mensual.sort_values(["fecha", "entidad", "categorias_bust"])
+    return mensual.reset_index(drop=True)
 
 
+def resumir_pd_pc_historicas_dashboard(tabla):
+    """Agrupa las tasas de cohorte por sus conteos, nunca por media simple.
+
+    Por ejemplo, si una cartera tiene 3 incumplimientos entre 100 normales y
+    otra tiene 1 entre 10, la tasa conjunta es 4/110, no el promedio de 3 y 10 %.
+    Un denominador sin observaciones devuelve NaN, no una tasa observada 0 %.
+    """
+    t = tabla.copy()
+    necesarios = ["cohorte", "entidad", "categorias_bust", "pd_A", "pd_B",
+                  "pd_C", "pd_D", "pc_A", "pc_B", "pc_E"]
+    faltantes = [c for c in necesarios if c not in t.columns]
+    if faltantes:
+        raise ValueError(f"Faltan columnas históricas de PD/PC: {faltantes}")
+    t["defectos"] = t[["pd_B", "pd_C", "pd_D"]].sum(axis=1)
+    t["curas"] = t[["pc_B", "pc_E"]].sum(axis=1)
+    return t[["cohorte", "entidad", "categorias_bust", "pd_A", "pc_A",
+              "defectos", "curas"]].copy()
 
 
+def construir_controles_dashboard(perdidas, saldos, inventario,
+                                  operaciones_2026, revision):
+    """Devuelve verificaciones trazables, junto con su magnitud observada.
+
+    No pintamos un mensaje fijo de 'todo bien': cada estado se vuelve a
+    calcular con las tablas del proyecto. Si algo cambia en el repositorio,
+    el control reflejará el resultado y permitirá ver qué se alteró.
+    """
+    controles = []
+
+    def agregar(nombre, correcto, detalle):
+        controles.append({"Control": nombre,
+                          "Estado": "Correcto" if correcto else "Revisar",
+                          "Detalle": detalle})
+
+    claves = ["entidad", "categorias_bust", "escenario", "ano"]
+    duplicados = int(perdidas.duplicated(claves).sum())
+    agregar("Unicidad entidad-cartera-escenario-año", duplicados == 0,
+            f"{duplicados} combinaciones duplicadas; {len(perdidas)} registros")
+
+    dif_inventario = abs(saldos["saldo_total_2025_crc"].sum()
+                         - inventario["saldo_crc"].sum())
+    agregar("Inventario inicial CN + CD", dif_inventario <= 1,
+            f"Diferencia de {dif_inventario:.6f} CRC")
+
+    por_segmento = perdidas.loc[perdidas["ano"].eq(2026),
+        ["entidad", "categorias_bust", "escenario", "EL_crc"]]
+    detalle = operaciones_2026.groupby(
+        ["entidad", "categorias_bust", "escenario"], as_index=False
+    )["EL_operacion_crc"].sum()
+    conc = por_segmento.merge(detalle, on=["entidad", "categorias_bust",
+                                            "escenario"], how="outer",
+                              validate="one_to_one")
+    dif_2026 = (conc["EL_crc"] - conc["EL_operacion_crc"]).abs()
+    mayor_2026 = float(dif_2026.max()) if dif_2026.notna().all() else np.inf
+    agregar("Detalle de operaciones de 2026", mayor_2026 <= 1,
+            f"Mayor diferencia: {mayor_2026:.6f} CRC")
+
+    desvio = (revision["EL_crc_detalle"] - revision["EL_crc_total"]).abs()
+    agregar("Consolidación A-E por escenario y año", desvio.max() <= 1,
+            f"Diferencia máxima: {desvio.max():.6f} CRC")
+
+    fuera = (perdidas["EL_crc"] < -1) | (
+        perdidas["EL_crc"] > perdidas["EAD_ano_anterior_crc"] + 1)
+    agregar("Límite 0 ≤ PE ≤ exposición", not fuera.any(),
+            f"{int(fuera.sum())} resultados fuera de rango")
+
+    tasas = perdidas[["PD", "PC", "LGL_cartera", "LGD"]]
+    invalidos = int((~tasas.ge(0).all(axis=1) | ~tasas.le(1).all(axis=1)
+                    | tasas.isna().any(axis=1)).sum())
+    agregar("Tasas entre 0 % y 100 %", invalidos == 0,
+            f"{invalidos} filas con tasas inválidas")
+
+    cero = calcular_sensibilidad_recuperaciones(perdidas, 0)
+    mayor_cero = (cero["EL_sensible_crc"] - perdidas["EL_crc"]).abs().max()
+    agregar("Sensibilidad del 0 % = modelo original", mayor_cero <= 1,
+            f"Diferencia máxima: {mayor_cero:.6f} CRC")
+    return pd.DataFrame(controles)
 
 
+# Se calculan una única vez al cargar app.py. Mover filtros no vuelve a leer
+# cientos de miles de observaciones: Shiny solo filtra estas tablas resumidas.
+cartera_historica_dashboard = preparar_cartera_historica_dashboard(
+    df_operaciones_crediticias, df_tipo_cambio
+)
+tasas_historicas_dashboard = resumir_pd_pc_historicas_dashboard(pd_pc_historicas)
+controles_dashboard = construir_controles_dashboard(
+    resultados_perdida_esperada, saldos_iniciales_2025,
+    inventario_el_2025, pe_operaciones_2026, revision_agregacion
+)
+
+# %%
+
+"""Dashboard interactivo con Shiny para Python"""
+
+# Usamos Shiny porque permite trabajar con filtros y resultados reactivos,
+# bastante parecido a Shiny de R. La aplicación se ejecuta, desde la carpeta
+# del repositorio, con:
+#   .\.venv\Scripts\shiny.exe run --reload --launch-browser app.py
+# Para instalar las librerías adicionales una sola vez en esa misma carpeta:
+#   .\.venv\Scripts\python.exe -m pip install shiny matplotlib
+# Si ejecutamos python app.py sin Shiny instalado, las secciones 4 y 5 igual
+# se calculan y se pueden consultar; únicamente no se abre la interfaz.
+
+import importlib.util
 
 
+def formatear_crc(valor):
+    """Da un formato corto a los montos: mil millones o millones de colones."""
+    if not np.isfinite(valor):
+        return "No disponible"
+    if abs(valor) >= 1e9:
+        return f"₡{valor / 1e9:,.2f} mil millones"
+    if abs(valor) >= 1e6:
+        return f"₡{valor / 1e6:,.2f} millones"
+    return f"₡{valor:,.0f}"
 
 
+def filtrar_resultados(datos, entidad="Todas", cartera="Todas",
+                      ano="2026", escenario="Ambos"):
+    """Filtra sin modificar la tabla original; Todos/Ambos incluyen todo."""
+    d = datos
+    if entidad != "Todas":
+        d = d.loc[d["entidad"].eq(entidad)]
+    if cartera != "Todas":
+        d = d.loc[d["categorias_bust"].eq(cartera)]
+    if ano != "Todos":
+        d = d.loc[d["ano"].eq(int(ano))]
+    if escenario != "Ambos":
+        d = d.loc[d["escenario"].eq(escenario)]
+    return d.copy()
 
 
+def obtener_indicadores(datos):
+    """Calcula indicadores agregados sin sumar dos veces patrimonios."""
+    pe = datos["EL_crc"].sum()
+    ead = datos["EAD_ano_anterior_crc"].sum()
+    n = datos["N_proyectadas"].sum()
 
+    # Una entidad puede aparecer en muchas carteras y años. Por eso usamos
+    # drop_duplicates antes de sumar el patrimonio de referencia 2025.
+    patrimonio = datos[["entidad", "patrimonio_crc"]].drop_duplicates(
+        "entidad"
+    )["patrimonio_crc"].sum()
+    return {
+        "pe": pe,
+        "ead": ead,
+        "pe_ead": 100 * pe / ead if ead > 0 else np.nan,
+        "patrimonio": patrimonio,
+        "pe_patrimonio": 100 * pe / patrimonio if patrimonio > 0 else np.nan,
+        "n": n,
+        "pe_por_operacion": pe / n if n > 0 else np.nan,
+    }
+
+
+# Para evitar instalar Shiny solamente para consultar EL en Python, creamos
+# la interfaz si la biblioteca está instalada. En VS Code instalaremos Shiny
+# y entonces este bloque quedará activo sin cambiar el archivo.
+if importlib.util.find_spec("shiny") is not None:
+    from shiny import App, ui, render, reactive
+    import matplotlib.pyplot as plt
+
+    # Dos colores consistentes: azul para Base y naranja para Adverso.
+    # Las figuras utilizan millones de colones para no llenar los ejes de ceros.
+    COLORES = {"Base": "#2765b0", "Adverso": "#db7844"}
+    COLOR_TEXTO = "#23364a"
+    carteras_dashboard = sorted(str(x) for x in resultados_perdida_esperada["categorias_bust"].unique())
+    entidades_dashboard = sorted(str(x) for x in resultados_perdida_esperada["entidad"].unique())
+
+    # CSS es solo presentación: mejora la legibilidad y no interviene en la
+    # lógica de las pérdidas ni modifica ninguna de las bases de datos.
+    estilos = ui.tags.style("""
+        body { background: #f5f7fb; color: #23364a; }
+        .bslib-card { border: 1px solid #e2e8f2; border-radius: 12px; }
+        .card-header { font-weight: 650; }
+        .bslib-value-box { border-radius: 12px; }
+        .explicacion { color: #506278; font-size: .89rem; line-height: 1.55; }
+        .titulo-seccion { font-weight: 700; margin-top: 12px; }
+        .pie-grafico { color: #718096; font-size: .8rem; }
+    """)
+
+    # Separamos los controles (izquierda) de los resultados. Esto permite
+    # cambiar escenario, año o segmento sin volver a ejecutar todos los modelos
+    # históricos de crédito.
+    app_ui = ui.page_sidebar(
+        ui.sidebar(
+            ui.h4("Filtros del análisis"),
+            ui.input_select("f_ano", "Año de proyección",
+                            choices=["2026", "2027", "2028", "Todos"],
+                            selected="2026"),
+            ui.input_select("f_escenario", "Escenario que querés ver",
+                            choices=["Ambos", "Base", "Adverso"],
+                            selected="Base"),
+            ui.input_select("f_entidad", "Entidad financiera",
+                            choices=["Todas"] + entidades_dashboard,
+                            selected="Todas"),
+            ui.input_selectize("f_cartera", "Cartera BUST",
+                               choices=["Todas"] + carteras_dashboard,
+                               selected="Todas"),
+            ui.hr(),
+            ui.h5("Sensibilidad"),
+            ui.input_slider("f_recorte", "Recorte ADICIONAL a recuperaciones",
+                            min=0, max=40, value=0, step=5, post=" %"),
+            ui.p("El 0 % deja el modelo original sin cambios. Este control "
+                 "modifica el análisis de sensibilidad, no los resultados base.",
+                 class_="explicacion"),
+            ui.hr(),
+            ui.p("Datos sintéticos. Corte: diciembre de 2025. "
+                 "Proyecciones: 2026–2028.", class_="explicacion"),
+            width=310,
+        ),
+        estilos,
+        ui.div(
+            ui.h2("Prueba de tensión | Riesgo de crédito"),
+            ui.p("Pérdidas esperadas por entidad y cartera BUST, escenarios "
+                 "macroeconómicos y sensibilidad de recuperaciones.",
+                 class_="explicacion"),
+        ),
+        ui.navset_tab(
+            ui.nav_panel(
+                "Resumen",
+                ui.layout_columns(
+                    ui.value_box("Pérdida esperada", ui.output_text("kpi_pe"),
+                                 theme="bg-blue", fill=False),
+                    ui.value_box("PE / exposición utilizada", ui.output_text("kpi_ratio"),
+                                 theme="bg-teal", fill=False),
+                    ui.value_box("PE / patrimonio 2025", ui.output_text("kpi_patrimonio"),
+                                 theme="bg-orange", fill=False),
+                    col_widths=[4, 4, 4],
+                ),
+                ui.p("Con 'Ambos' o 'Todos' se suman pérdidas de varios escenarios "
+                     "o años. Para interpretar un único año/escenario, filtralo "
+                     "en la barra lateral. La exposición usada en la razón EL/EAD "
+                     "es la del inicio de cada horizonte.", class_="explicacion"),
+                ui.layout_columns(
+                    ui.card(ui.card_header("Base frente a Adverso"),
+                            ui.output_plot("grafico_escenarios", height="340px"),
+                            ui.p("Compara siempre los dos escenarios aunque el filtro "
+                                 "principal muestre solo uno.", class_="pie-grafico")),
+                    ui.card(ui.card_header("Carteras que más contribuyen"),
+                            ui.output_plot("grafico_carteras", height="340px")),
+                    col_widths=[6, 6],
+                ),
+                ui.card(ui.card_header("Resumen consolidado por año y escenario"),
+                        ui.output_data_frame("tabla_consolidado")),
+            ),
+            ui.nav_panel(
+                "Cartera histórica",
+                ui.p("Los saldos son inventarios mensuales observados entre "
+                     "2019 y 2025, en millones de colones. Los filtros de "
+                     "entidad y cartera se aplican aquí; los escenarios son "
+                     "solo para proyecciones.", class_="explicacion"),
+                ui.layout_columns(
+                    ui.card(ui.card_header("Exposición mensual 2019–2025"),
+                            ui.output_plot("grafico_historico_saldo", height="345px")),
+                    ui.card(ui.card_header("Composición al cierre histórico"),
+                            ui.input_select("f_ano_hist", "Año de cierre observado",
+                                            choices=[str(y) for y in range(2019, 2026)],
+                                            selected="2025"),
+                            ui.output_plot("grafico_historico_composicion",
+                                           height="305px")),
+                    col_widths=[6, 6],
+                ),
+                ui.card(ui.card_header("Saldos y operaciones del cierre histórico seleccionado"),
+                        ui.output_data_frame("tabla_historico_cartera")),
+                ui.card(ui.card_header("PD y PC históricas: cohortes de 12 meses"),
+                        ui.output_plot("grafico_tasas_historicas", height="325px"),
+                        ui.output_data_frame("tabla_tasas_historicas"),
+                        ui.p("La cohorte 2024 se observa hasta diciembre de 2025. "
+                             "Se agrupan los numeradores y denominadores reales; "
+                             "una tasa sin denominador aparece vacía.",
+                             class_="pie-grafico")),
+            ),
+            ui.nav_panel(
+                "Indicadores de riesgo",
+                ui.p("PD, PC y LGD se muestran como promedios ponderados por "
+                     "exposición. El gráfico de tasas compara siempre Base y "
+                     "Adverso para los años seleccionados, aunque el filtro "
+                     "lateral esté en un único escenario. El cociente PE/EAD "
+                     "se obtiene de los importes totales.",
+                     class_="explicacion"),
+                ui.layout_columns(
+                    ui.card(ui.card_header("Comparación de tasas: Base frente a Adverso"),
+                            ui.input_select("f_metrica", "Tasa para comparar",
+                                            choices={"PD": "PD - incumplimiento",
+                                                     "PC": "PC - cura",
+                                                     "LGD": "LGD - severidad",
+                                                     "LGL_cartera": "LGL - pérdida sin cura"},
+                                            selected="LGD"),
+                            ui.output_plot("grafico_tasas_proyectadas", height="340px"),
+                            ui.p("Cada barra corresponde a un escenario y año. La longitud "
+                                 "indica la tasa seleccionada, en porcentaje.",
+                                 class_="pie-grafico")),
+                    ui.card(ui.card_header("Exposición frente a pérdida esperada"),
+                            ui.output_plot("grafico_ead_el", height="340px")),
+                    col_widths=[6, 6],
+                ),
+                ui.card(ui.card_header("Indicadores agregados por año y escenario"),
+                        ui.output_data_frame("tabla_indicadores_agrupados")),
+                ui.card(ui.card_header("Detalle técnico: PD, PC, LGL, LGD, EAD y PE"),
+                        ui.output_data_frame("tabla_indicadores_detalle"),
+                        ui.p("Para 2026, PE distingue el saldo normal y el dudoso. "
+                             "Para 2027–2028, la EAD es la exposición del año previo. "
+                             "El detalle conserva las cifras que justifican "
+                             "cada resultado.", class_="pie-grafico")),
+            ),
+            ui.nav_panel(
+                "Entidades y carteras",
+                ui.layout_columns(
+                    ui.card(ui.card_header("Pérdida esperada por entidad"),
+                            ui.output_plot("grafico_entidades", height="330px")),
+                    ui.card(ui.card_header("Contribución por cartera BUST"),
+                            ui.output_plot("grafico_participaciones", height="330px")),
+                    col_widths=[6, 6],
+                ),
+                ui.card(ui.card_header("Detalle por entidad y cartera"),
+                        ui.output_data_frame("tabla_detalle"),
+                        ui.p("Los montos se muestran en millones de CRC. La razón "
+                             "PE/patrimonio compara la PE del segmento con el "
+                             "patrimonio completo de su entidad en 2025.",
+                             class_="pie-grafico")),
+                ui.card(ui.card_header("Diez operaciones con mayor EL en 2026"),
+                        ui.output_data_frame("tabla_operaciones"),
+                        ui.p("Solo 2026: el inventario de créditos individuales "
+                             "existe al corte 2025. No se inventan IDs para 2027–2028. "
+                             "El filtro de año no cambia esta tabla.", class_="pie-grafico")),
+            ),
+            ui.nav_panel(
+                "Escenarios",
+                ui.card(ui.card_header("Lectura de resultados y señales atípicas"),
+                        ui.output_code("texto_interpretacion"),
+                        ui.p("Esta lectura resume relaciones del escenario y no "
+                             "prueba causalidad estadística.", class_="explicacion")),
+                ui.card(ui.card_header("Diferencia entre Adverso y Base"),
+                        ui.output_data_frame("tabla_comparacion")),
+                ui.card(ui.card_header("Trayectorias macroeconómicas suministradas"),
+                        ui.input_select(
+                            "f_macro", "Indicador macroeconómico",
+                            choices={
+                                "tc_crc_usd": "Tipo de cambio CRC/USD",
+                                "tasa_mn_pct": "Tasa en moneda nacional (%)",
+                                "desempleo_pct": "Desempleo (%)",
+                                "pib_interanual_pct": "PIB interanual (%)",
+                                "indice_inmuebles": "Índice de inmuebles",
+                                "indice_vehiculos": "Índice de vehículos",
+                                "indice_titulos": "Índice de títulos",
+                            }, selected="tc_crc_usd"
+                        ),
+                        ui.output_plot("grafico_macro", height="330px"),
+                        ui.p("Las proyecciones de PD usan el tipo de cambio, "
+                             "las de PC usan la tasa en MN y la LGD utiliza "
+                             "índices de colaterales. PIB y tasas también "
+                             "influyen en el crecimiento proyectado de cartera; "
+                             "no son coeficientes individuales de PD/PC.",
+                             class_="explicacion")),
+            ),
+            ui.nav_panel(
+                "Sensibilidad",
+                ui.p("Se reduce la recuperación neta que ya tenía incluido "
+                     "el modelo del escenario. No cambiamos PD, PC, exposición "
+                     "ni tasas de descuento: aislamos solamente este supuesto.",
+                     class_="explicacion"),
+                ui.layout_columns(
+                    ui.value_box("PE con recorte seleccionado",
+                                 ui.output_text("kpi_pe_sensible"),
+                                 theme="bg-blue", fill=False),
+                    ui.value_box("Cambio respecto al modelo original",
+                                 ui.output_text("kpi_incremento"),
+                                 theme="bg-orange", fill=False),
+                    col_widths=[6, 6],
+                ),
+                ui.card(ui.card_header("Curva de sensibilidad (0 % a 40 %)"),
+                        ui.output_plot("grafico_sensibilidad", height="355px")),
+                ui.card(ui.card_header("Detalle del supuesto seleccionado"),
+                        ui.output_data_frame("tabla_sensibilidad")),
+            ),
+            ui.nav_panel(
+                "Descargas",
+                ui.p("Podés exportar los resultados calculados a CSV para "
+                     "revisarlos en Excel o utilizarlos en el informe. Los "
+                     "archivos respetan los filtros que corresponden a cada tabla.",
+                     class_="explicacion"),
+                ui.layout_columns(
+                    ui.card(ui.card_header("Resultados proyectados"),
+                            ui.download_button("descargar_proyecciones",
+                                               "Descargar PE, PD, PC, LGD y EAD")),
+                    ui.card(ui.card_header("Resumen por segmento"),
+                            ui.download_button("descargar_resumen",
+                                               "Descargar resumen filtrado")),
+                    col_widths=[6, 6],
+                ),
+                ui.layout_columns(
+                    ui.card(ui.card_header("Histórico mensual de cartera"),
+                            ui.download_button("descargar_historico",
+                                               "Descargar saldos 2019–2025")),
+                    ui.card(ui.card_header("PD y PC históricas"),
+                            ui.download_button("descargar_tasas_historicas",
+                                               "Descargar cohortes históricas")),
+                    col_widths=[6, 6],
+                ),
+                ui.layout_columns(
+                    ui.card(ui.card_header("Sensibilidad"),
+                            ui.download_button("descargar_sensibilidad",
+                                               "Descargar sensibilidad seleccionada")),
+                    ui.card(ui.card_header("Operaciones de 2026"),
+                            ui.download_button("descargar_operaciones",
+                                               "Descargar detalle individual")),
+                    col_widths=[6, 6],
+                ),
+            ),
+            ui.nav_panel(
+                "Metodología",
+                ui.markdown("""
+### Qué está calculando esta aplicación
+
+- **2026:** `PE = PD × LGD × CN_2025 + LGD × CD_2025`.
+  Los créditos ya dudosos al cierre de 2025 no se multiplican nuevamente por PD.
+- **2027 y 2028:** `PE_t = PD_t × LGD_t × EAD_(t−1)`.
+  Se usan las exposiciones proyectadas a diciembre del año previo.
+- **LGD:** `LGL × (1 − PC)`, tal como quedó implementado en la sección 3.
+- **LGL:** `1 − (recuperaciones netas descontadas / saldo de cartera)`.
+  Los valores de garantía y las recuperaciones ya incorporan los supuestos
+  macroeconómicos de cada escenario, gastos de venta y plazos de realización.
+- **Sensibilidad:** `Recuperación ajustada = Recuperación original ×
+  (1 − recorte/100)`. El control 0 % reproduce la PE original.
+
+### Supuestos que debemos documentar
+
+1. Los saldos de 2025 se separan con la clasificación BUST ya programada.
+   Se excluyen back-to-back, categoría `Otro` y cancelaciones elegibles.
+2. Todos los importes se convierten a colones al tipo de cambio del corte.
+3. La **LGL es por segmento**, porque se supone que las garantías del conjunto
+   de créditos son representativas de las garantías de los incumplidos.
+4. En operaciones sin recuperación por garantías, la porción no recuperable se
+   considera pérdida total. No se estiman cobros extrajudiciales adicionales.
+5. El **patrimonio de 2025 permanece fijo** como base comparativa. No proyectamos
+   patrimonio ni calculamos solvencia regulatoria.
+6. Para informar PE por operación de años proyectados se aproxima la cantidad
+   futura de créditos suponiendo **saldo promedio constante por segmento**.
+   Los conteos proyectados son valores esperados, no operaciones observadas.
+7. Las fórmulas de 2027–2028 no separan explícitamente la EAD dudosa; se sigue
+   el tratamiento del documento del curso, no una transición de estados nueva.
+8. No se suman los importes de bienes adjudicados pendientes por separado a
+   la PE, pues la sección de recuperaciones ya los trata de forma diferenciada.
+9. Una variación de sensibilidad es **un estrés adicional** sobre recuperaciones
+   netas existentes; no sustituye el escenario adverso ni vuelve a cobrar gastos.
+10. La PE es una estimación del ejercicio sintético, no una pérdida realizada ni
+    una provisión contable que deba ser idéntica a la estimación registrada.
+
+### Fuentes del grupo
+
+- *Instrucciones para mini proyecto de crédito*, apartados 4.1, 4.2 y 5.
+- *Mini proyecto de crédito - Riesgos en entidades financieras I*, apartado
+  de supuestos de PD, PC, garantías, recuperaciones y LGL.
+- Bases sintéticas y funciones anteriores de `app.py`.
+
+### Lectura de las tablas históricas y los controles
+
+- **Histórico de cartera (2019–2025):** saldos mensuales por entidad y BUST;
+  se convierten a colones con el tipo de cambio del mes. Son cortes separados:
+  no se suman los inventarios de distintos meses para obtener una cartera total.
+- **PD y PC históricas:** proporción de eventos de las cohortes iniciales
+  seguidas por 12 meses; se agregan eventos y exposiciones en número de
+  operaciones, no se promedian las tasas de cada segmento.
+- **PD, PC y LGD proyectadas agregadas:** promedios ponderados por la exposición
+  usada en el cálculo. Son indicadores descriptivos, no sustituyen la fórmula
+  especial de pérdida esperada de 2026.
+- **Celdas sin datos:** cuando no existe denominador para estimar una tasa,
+  dejamos el valor vacío, en vez de inventar cero. Las tablas de detalle permiten identificar esos casos.
+- **Exportación:** archivos CSV con resultados generados a partir de las bases
+  y filtros de la aplicación. Ninguna tabla se llena manualmente.
+                """),
+            ),
+            id="pestanas",
+        ),
+        title="Mini proyecto de crédito | Riesgos en entidades financieras I",
+        fillable=False,
+    )
+
+    def server(input, output, session):
+        """Conecta los controles del usuario con datos, indicadores y gráficos."""
+
+        @reactive.calc
+        def datos_filtrados():
+            # Shiny recuerda qué inputs leímos. Si cambia uno, solamente
+            # recalcula las tablas y figuras que dependen de estos filtros.
+            return filtrar_resultados(
+                resultados_perdida_esperada,
+                entidad=input.f_entidad(), cartera=input.f_cartera(),
+                ano=input.f_ano(), escenario=input.f_escenario(),
+            )
+
+        @reactive.calc
+        def datos_ambos_escenarios():
+            # Para comparar Base y Adverso ignoramos solo el filtro escenario.
+            # Se conservan entidad, cartera y año para una comparación justa.
+            return filtrar_resultados(
+                resultados_perdida_esperada,
+                entidad=input.f_entidad(), cartera=input.f_cartera(),
+                ano=input.f_ano(), escenario="Ambos",
+            )
+
+        @reactive.calc
+        def datos_sensibles():
+            # Este cálculo es liviano porque usa los 126 registros ya estimados.
+            return calcular_sensibilidad_recuperaciones(
+                datos_filtrados(), recorte_pct=input.f_recorte()
+            )
+
+        @reactive.calc
+        def historico_filtrado():
+            # Las cifras observadas no cambian por el escenario macro futuro.
+            h = cartera_historica_dashboard
+            if input.f_entidad() != "Todas":
+                h = h.loc[h["entidad"].eq(input.f_entidad())]
+            if input.f_cartera() != "Todas":
+                h = h.loc[h["categorias_bust"].eq(input.f_cartera())]
+            return h.copy()
+
+        @reactive.calc
+        def historico_tasas_filtrado():
+            # Cada fila mantiene los conteos reales de una cohorte por segmento.
+            d = tasas_historicas_dashboard
+            if input.f_entidad() != "Todas":
+                d = d.loc[d["entidad"].eq(input.f_entidad())]
+            if input.f_cartera() != "Todas":
+                d = d.loc[d["categorias_bust"].eq(input.f_cartera())]
+            return d.copy()
+
+        @reactive.calc
+        def tasas_por_cohorte():
+            # Recalcular los cocientes tras SUMAR numeradores y denominadores,
+            # en vez de promediar porcentajes con tamaños de muestra distintos.
+            d = historico_tasas_filtrado().groupby("cohorte", as_index=False).agg(
+                normales=("pd_A", "sum"),
+                dudosas=("pc_A", "sum"),
+                incumplimientos=("defectos", "sum"),
+                curas=("curas", "sum"),
+            )
+            d["Cierre"] = d["cohorte"] + 1
+            d["PD (%)"] = np.where(d["normales"] > 0,
+                                    100 * d["incumplimientos"] / d["normales"],
+                                    np.nan)
+            d["PC (%)"] = np.where(d["dudosas"] > 0,
+                                    100 * d["curas"] / d["dudosas"], np.nan)
+            return d
+
+        @reactive.calc
+        def indicadores_ponderados():
+            # Las tasas de diferentes segmentos no se pueden sumar. Usamos
+            # exposiciones como pesos, con una salida separada por año y escenario.
+            d = datos_filtrados()
+            filas = []
+            for (ano, escenario), g in d.groupby(["ano", "escenario"]):
+                w = g["EAD_ano_anterior_crc"].to_numpy(dtype=float)
+                wtotal = w.sum()
+                fila = {"Año": ano, "Escenario": escenario,
+                        "EAD (millones CRC)": wtotal / 1e6,
+                        "PE (millones CRC)": g["EL_crc"].sum() / 1e6,
+                        "PE/EAD (%)": (100 * g["EL_crc"].sum() / wtotal
+                                       if wtotal > 0 else np.nan)}
+                for columna in ["PD", "PC", "LGL_cartera", "LGD"]:
+                    fila[columna] = (100 * np.average(g[columna], weights=w)
+                                     if wtotal > 0 else np.nan)
+                filas.append(fila)
+            # Con una selección sin observaciones conservamos todas las
+            # columnas para que los gráficos y DataGrids no den KeyError.
+            columnas = ["Año", "Escenario", "EAD (millones CRC)",
+                        "PE (millones CRC)", "PE/EAD (%)", "PD", "PC",
+                        "LGL_cartera", "LGD"]
+            return pd.DataFrame(filas, columns=columnas)
+
+        def descargar_csv(tabla):
+            # Con punto y coma evitamos chocar con la coma decimal que utiliza
+            # normalmente Excel en español. utf-8-sig agrega una marca BOM,
+            # útil para que Excel reconozca correctamente las tildes y la ñ.
+            return tabla.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
+
+        @render.text
+        def kpi_pe():
+            return formatear_crc(obtener_indicadores(datos_filtrados())["pe"])
+
+        @render.text
+        def kpi_ratio():
+            valor = obtener_indicadores(datos_filtrados())["pe_ead"]
+            return f"{valor:.2f} %" if np.isfinite(valor) else "Sin datos"
+
+        @render.text
+        def kpi_patrimonio():
+            valor = obtener_indicadores(datos_filtrados())["pe_patrimonio"]
+            return f"{valor:.2f} %" if np.isfinite(valor) else "Sin datos"
+
+        @render.text
+        def kpi_pe_sensible():
+            return formatear_crc(datos_sensibles()["EL_sensible_crc"].sum())
+
+        @render.text
+        def kpi_incremento():
+            d = datos_sensibles()
+            base = d["EL_crc"].sum()
+            aumento = d["incremento_EL_crc"].sum()
+            porcentaje = 100 * aumento / base if base > 0 else 0
+            return f"{formatear_crc(aumento)} (+{porcentaje:.2f} %)"
+
+        @render.plot
+        def grafico_escenarios():
+            d = resumir_el(datos_ambos_escenarios(), ["ano", "escenario"])
+            tabla = d.pivot(index="ano", columns="escenario", values="EL_crc")
+            fig, ax = plt.subplots(figsize=(8.0, 4.0))
+            anos = tabla.index.to_numpy()
+            x = np.arange(len(anos))
+            for desplazamiento, escenario in [(-0.19, "Base"), (0.19, "Adverso")]:
+                valores = tabla.get(escenario, pd.Series(0, index=tabla.index))
+                ax.bar(x + desplazamiento, valores.to_numpy() / 1e6,
+                       width=0.36, label=escenario, color=COLORES[escenario])
+            ax.set_xticks(x, anos)
+            ax.set_ylabel("Pérdida esperada (millones de ₡)")
+            ax.legend(frameon=False)
+            ax.grid(axis="y", alpha=0.17)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.tight_layout()
+            return fig
+
+        @render.plot
+        def grafico_carteras():
+            d = resumir_el(datos_filtrados(), ["categorias_bust"])
+            d = d.sort_values("EL_crc", ascending=True)
+            fig, ax = plt.subplots(figsize=(8.3, 4.3))
+            ax.barh(d["categorias_bust"], d["EL_crc"] / 1e6,
+                    color="#4379b7")
+            ax.set_xlabel("Pérdida esperada (millones de ₡)")
+            ax.grid(axis="x", alpha=0.17)
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.tick_params(axis="y", labelsize=8)
+            fig.tight_layout()
+            return fig
+
+        @render.plot
+        def grafico_entidades():
+            d = resumir_el(datos_filtrados(), ["entidad"])
+            d = d.sort_values("entidad")
+            fig, ax = plt.subplots(figsize=(7, 4))
+            ax.bar(d["entidad"], d["EL_crc"] / 1e6, color="#467bb6")
+            ax.set_xlabel("Entidad")
+            ax.set_ylabel("Pérdida esperada (millones de ₡)")
+            ax.grid(axis="y", alpha=0.17)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.tight_layout()
+            return fig
+
+        @render.plot
+        def grafico_participaciones():
+            d = resumir_el(datos_filtrados(), ["categorias_bust"])
+            d = d.sort_values("EL_crc", ascending=False)
+            total = d["EL_crc"].sum()
+            porcentajes = 100 * d["EL_crc"] / total if total > 0 else d["EL_crc"] * 0
+            fig, ax = plt.subplots(figsize=(7, 4))
+            ax.barh(d["categorias_bust"], porcentajes, color="#5e8eb8")
+            ax.invert_yaxis()
+            ax.set_xlabel("Participación en EL (%)")
+            ax.set_xlim(left=0)
+            ax.grid(axis="x", alpha=0.17)
+            ax.spines[["top", "right"]].set_visible(False)
+            ax.tick_params(axis="y", labelsize=8)
+            fig.tight_layout()
+            return fig
+
+        @render.text
+        def texto_interpretacion():
+            # No basta con decir "adverso es peor". Aquí comparamos montos
+            # agregados de los mismos segmentos y comentamos los casos donde
+            # el resultado no sigue esa expectativa (sin modificar los datos).
+            d = datos_ambos_escenarios()
+            if d.empty:
+                return "No hay operaciones para esta combinación de filtros."
+            anuales = resumir_el(d, ["ano", "escenario"])
+            texto = []
+            for ano, g in anuales.groupby("ano"):
+                valores = g.set_index("escenario")["EL_crc"]
+                if not {"Base", "Adverso"}.issubset(valores.index):
+                    continue
+                base = float(valores["Base"])
+                adverso = float(valores["Adverso"])
+                dif = 100 * (adverso / base - 1) if base > 0 else np.nan
+                texto.append(
+                    f"{ano}: EL Base {formatear_crc(base)}; EL Adverso "
+                    f"{formatear_crc(adverso)}; variación {dif:+.2f} %."
+                )
+            dif_segmentos = comparar_escenarios_el(d)
+            excepciones = dif_segmentos.loc[dif_segmentos["Diferencia_crc"] < -1]
+            if len(excepciones):
+                texto.append(
+                    f"Atención: {len(excepciones)} segmento(s) tienen menor PE "
+                    "en Adverso que en Base; revisar exposición proyectada, "
+                    "PD y LGD antes de interpretarlos."
+                )
+            else:
+                texto.append(
+                    "En el universo seleccionado, el escenario adverso no "
+                    "produce una PE menor que el base en ningún segmento."
+                )
+            texto.append(
+                "Mecanismos del modelo: tipo de cambio → PD; tasa en MN → "
+                "PC; índices de activos → recuperaciones/LGL; PIB y tasas → "
+                "crecimiento de saldos. No hay coeficientes directos de "
+                "desempleo o inflación en PD y PC."
+            )
+            return "\n".join(texto)
+
+        @render.plot
+        def grafico_macro():
+            variable = input.f_macro()
+            d = macro_para_dashboard
+            fig, ax = plt.subplots(figsize=(9, 3.8))
+            for escenario in ["Base", "Adverso"]:
+                s = d.loc[d["escenario"].eq(escenario)].sort_values("ano")
+                ax.plot(s["ano"], s[variable], marker="o", linewidth=2.5,
+                        color=COLORES[escenario], label=escenario)
+            ax.set_xticks([2026, 2027, 2028])
+            ax.set_xlabel("Año")
+            ax.set_ylabel(variable.replace("_", " "))
+            ax.grid(alpha=0.18)
+            ax.legend(frameon=False)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.tight_layout()
+            return fig
+
+        @render.plot
+        def grafico_sensibilidad():
+            # Armamos una pequeña curva variando el supuesto desde 0 a 40%.
+            # Se evalúa el mismo universo que seleccionó la persona.
+            d = datos_filtrados()
+            fig, ax = plt.subplots(figsize=(9, 4))
+            for escenario, grupo in d.groupby("escenario"):
+                x, y = [], []
+                for recorte in range(0, 41, 5):
+                    s = calcular_sensibilidad_recuperaciones(grupo, recorte)
+                    x.append(recorte)
+                    y.append(s["EL_sensible_crc"].sum() / 1e6)
+                ax.plot(x, y, marker="o", linewidth=2,
+                        label=escenario, color=COLORES.get(escenario, "#415a77"))
+            ax.axvline(input.f_recorte(), color="#707b8a", linestyle="--",
+                       linewidth=1.4, label="Recorte seleccionado")
+            ax.set_xlabel("Recorte adicional de recuperaciones (%)")
+            ax.set_ylabel("Pérdida esperada (millones de ₡)")
+            ax.grid(alpha=0.16)
+            ax.legend(frameon=False)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.tight_layout()
+            return fig
+
+        @render.data_frame
+        def tabla_consolidado():
+            d = resumir_el(datos_ambos_escenarios(), ["ano", "escenario"])
+            d["EL (millones CRC)"] = (d["EL_crc"] / 1e6).round(2)
+            d["EAD base (millones CRC)"] = (d["EAD_base_crc"] / 1e6).round(2)
+            d["EL/EAD (%)"] = d["EL_EAD_pct"].round(2)
+            return render.DataGrid(d[["ano", "escenario", "EL (millones CRC)",
+                                       "EAD base (millones CRC)", "EL/EAD (%)"]],
+                                   filters=True, width="100%")
+
+        @render.data_frame
+        def tabla_detalle():
+            d = datos_filtrados().copy()
+            d["PE (millones CRC)"] = (d["EL_crc"] / 1e6).round(2)
+            d["EAD base (millones CRC)"] = (
+                d["EAD_ano_anterior_crc"] / 1e6
+            ).round(2)
+            d["PE/EAD (%)"] = d["EL_sobre_EAD_pct"].round(2)
+            d["PE/patrimonio 2025 (%)"] = d["EL_sobre_patrimonio_pct"].round(2)
+            d["PE por operación (CRC)"] = d["EL_por_operacion_crc"].round(2)
+            cols = ["entidad", "categorias_bust", "escenario", "ano",
+                    "PE (millones CRC)", "EAD base (millones CRC)",
+                    "PE/EAD (%)", "PE/patrimonio 2025 (%)", "PE por operación (CRC)"]
+            return render.DataGrid(d[cols].sort_values("PE (millones CRC)",
+                                                       ascending=False),
+                                   filters=True, width="100%", height="420px")
+
+        @render.data_frame
+        def tabla_operaciones():
+            d = pe_operaciones_2026.copy()
+            if input.f_entidad() != "Todas":
+                d = d.loc[d["entidad"].eq(input.f_entidad())]
+            if input.f_cartera() != "Todas":
+                d = d.loc[d["categorias_bust"].eq(input.f_cartera())]
+            if input.f_escenario() != "Ambos":
+                d = d.loc[d["escenario"].eq(input.f_escenario())]
+            d = d.nlargest(10, "EL_operacion_crc").copy()
+            d["Saldo (millones CRC)"] = (d["saldo_crc"] / 1e6).round(2)
+            d["PE (millones CRC)"] = (d["EL_operacion_crc"] / 1e6).round(2)
+            return render.DataGrid(
+                d[["operacion_id", "entidad", "categorias_bust", "estado_t0",
+                   "escenario", "Saldo (millones CRC)", "PE (millones CRC)"]],
+                width="100%", filters=True,
+            )
+
+        @render.data_frame
+        def tabla_comparacion():
+            d = comparacion_base_adverso.copy()
+            if input.f_entidad() != "Todas":
+                d = d.loc[d["entidad"].eq(input.f_entidad())]
+            if input.f_cartera() != "Todas":
+                d = d.loc[d["categorias_bust"].eq(input.f_cartera())]
+            if input.f_ano() != "Todos":
+                d = d.loc[d["ano"].eq(int(input.f_ano()))]
+            d["PE Base (millones CRC)"] = (d["EL_Base_crc"] / 1e6).round(2)
+            d["PE Adverso (millones CRC)"] = (d["EL_Adverso_crc"] / 1e6).round(2)
+            d["Diferencia (millones CRC)"] = (d["Diferencia_crc"] / 1e6).round(2)
+            d["Diferencia (%)"] = d["Diferencia_pct"].round(2)
+            return render.DataGrid(d[["ano", "entidad", "categorias_bust",
+                                       "PE Base (millones CRC)",
+                                       "PE Adverso (millones CRC)",
+                                       "Diferencia (millones CRC)", "Diferencia (%)"]],
+                                   filters=True, width="100%", height="420px")
+
+        @render.data_frame
+        def tabla_sensibilidad():
+            d = datos_sensibles().copy()
+            d["PE original (millones CRC)"] = (d["EL_crc"] / 1e6).round(2)
+            d["PE ajustada (millones CRC)"] = (d["EL_sensible_crc"] / 1e6).round(2)
+            d["Aumento (millones CRC)"] = (d["incremento_EL_crc"] / 1e6).round(2)
+            d["Aumento (%)"] = d["incremento_EL_pct"].round(2)
+            return render.DataGrid(
+                d[["entidad", "categorias_bust", "escenario", "ano",
+                   "PE original (millones CRC)", "PE ajustada (millones CRC)",
+                   "Aumento (millones CRC)", "Aumento (%)"]],
+                filters=True, width="100%", height="420px",
+            )
+
+        @render.plot
+        def grafico_historico_saldo():
+            d = historico_filtrado().groupby("fecha", as_index=False)["saldo_crc"].sum()
+            fig, ax = plt.subplots(figsize=(8.5, 3.8))
+            ax.plot(d["fecha"], d["saldo_crc"] / 1e6,
+                    color="#2765b0", linewidth=2)
+            ax.set_ylabel("Saldo al cierre mensual (millones CRC)")
+            ax.set_xlabel("Fecha de observación")
+            ax.grid(alpha=0.17)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.autofmt_xdate()
+            fig.tight_layout()
+            return fig
+
+        @render.plot
+        def grafico_historico_composicion():
+            d = historico_filtrado()
+            d = d.loc[(d["ano"].eq(int(input.f_ano_hist())))
+                      & d["fecha"].dt.month.eq(12)]
+            g = d.groupby("categorias_bust")["saldo_crc"].sum().sort_values()
+            fig, ax = plt.subplots(figsize=(8.5, 3.8))
+            if not g.empty and g.sum() > 0:
+                ax.barh(g.index, 100 * g / g.sum(), color="#5e8eb8")
+            else:
+                ax.text(0.5, 0.5, "Sin observaciones en el corte", ha="center",
+                        va="center", transform=ax.transAxes)
+            ax.set_xlabel("Participación del saldo de diciembre (%)")
+            ax.tick_params(axis="y", labelsize=8)
+            ax.set_xlim(left=0)
+            ax.grid(axis="x", alpha=0.17)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.tight_layout()
+            return fig
+
+        @render.plot
+        def grafico_tasas_historicas():
+            d = tasas_por_cohorte()
+            fig, ax = plt.subplots(figsize=(8.5, 3.7))
+            for nombre, color in [("PD (%)", "#2765b0"),
+                                  ("PC (%)", "#db7844")]:
+                ax.plot(d["Cierre"], d[nombre], marker="o", label=nombre,
+                        color=color, linewidth=2)
+            ax.set_xticks(list(range(2020, 2026)))
+            ax.set_ylabel("Tasa histórica por número de operaciones (%)")
+            ax.set_xlabel("Año de cierre del seguimiento de 12 meses")
+            ax.legend(frameon=False)
+            ax.grid(alpha=0.17)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.tight_layout()
+            return fig
+
+        @render.data_frame
+        def tabla_historico_cartera():
+            d = historico_filtrado()
+            d = d.loc[d["fecha"].dt.month.eq(12)
+                      & d["ano"].eq(int(input.f_ano_hist()))]
+            d = d[["ano", "entidad", "categorias_bust", "operaciones",
+                   "saldo_crc"]].copy()
+            d["Saldo (millones CRC)"] = (d["saldo_crc"] / 1e6).round(2)
+            d = d.drop(columns="saldo_crc").sort_values(
+                ["ano", "entidad", "categorias_bust"])
+            return render.DataGrid(d, filters=True, width="100%", height="350px")
+
+        @render.data_frame
+        def tabla_tasas_historicas():
+            d = tasas_por_cohorte().copy()
+            for c in ["PD (%)", "PC (%)"]:
+                d[c] = d[c].round(3)
+            d = d.rename(columns={"cohorte": "Inicio", "normales": "Normales iniciales",
+                                  "dudosas": "Dudosos iniciales",
+                                  "incumplimientos": "Nuevos incumplimientos",
+                                  "curas": "Curas / cancelaciones elegibles"})
+            return render.DataGrid(d[["Inicio", "Cierre", "Normales iniciales",
+                                      "Dudosos iniciales", "Nuevos incumplimientos",
+                                      "Curas / cancelaciones elegibles", "PD (%)", "PC (%)"]],
+                                   filters=True, width="100%")
+
+        @render.plot
+        def grafico_tasas_proyectadas():
+            # Siempre comparamos Base y Adverso, incluso si el usuario dejó
+            # seleccionado solo uno de ellos en el filtro lateral.
+            # Así evitamos que aparezca un único punto perdido en el gráfico.
+            d = datos_ambos_escenarios()
+            columna = input.f_metrica()
+            nombres = {
+                "PD": "Probabilidad de incumplimiento (PD)",
+                "PC": "Tasa de cura (PC)",
+                "LGD": "Severidad de pérdida (LGD)",
+                "LGL_cartera": "Pérdida sin ajuste por cura (LGL)",
+            }
+
+            # Agrupamos por año y escenario. Como las tasas no se suman,
+            # calculamos el promedio usando la exposición como peso.
+            # np.average permite que una cartera con exposición mayor tenga
+            # más peso, en lugar de contar todas las carteras por igual.
+            filas = []
+            for (ano, escenario), g in d.groupby(["ano", "escenario"]):
+                pesos = g["EAD_ano_anterior_crc"].to_numpy(dtype=float)
+                tasas = g[columna].to_numpy(dtype=float)
+                validos = np.isfinite(pesos) & np.isfinite(tasas) & (pesos > 0)
+                if validos.any():
+                    tasa = 100 * np.average(tasas[validos], weights=pesos[validos])
+                    filas.append((int(ano), str(escenario), tasa))
+
+            fig, ax = plt.subplots(figsize=(8.5, 3.8))
+            if filas:
+                # Las barras horizontales son más fáciles de leer que una
+                # línea con un solo punto cuando filtramos un único año.
+                filas.sort(key=lambda r: (r[0], r[1] != "Base"))
+                etiquetas = [f"{ano} · {escenario}" for ano, escenario, _ in filas]
+                valores = [valor for _, _, valor in filas]
+                colores = [COLORES[escenario] for _, escenario, _ in filas]
+                posiciones = np.arange(len(filas))
+
+                ax.barh(posiciones, valores, color=colores, height=0.65)
+                ax.set_yticks(posiciones, labels=etiquetas)
+                ax.invert_yaxis()
+                limite = min(100, max(5, max(valores) * 1.22))
+                ax.set_xlim(0, limite)
+                # Escribimos el porcentaje sobre cada barra para no tener que
+                # estimarlo visualmente a partir del eje horizontal.
+                for y, valor in zip(posiciones, valores):
+                    ax.text(valor + limite * 0.015, y, f"{valor:.2f} %",
+                            va="center", ha="left", fontsize=10, color=COLOR_TEXTO)
+            else:
+                ax.text(0.5, 0.5, "No hay datos para esta selección",
+                        ha="center", va="center", transform=ax.transAxes)
+
+            ax.set_xlabel(f"{nombres.get(columna, columna)} ponderada por EAD (%)")
+            ax.grid(axis="x", alpha=0.14)
+            ax.set_axisbelow(True)
+            ax.spines[["top", "right", "left"]].set_visible(False)
+            fig.tight_layout()
+            return fig
+
+        @render.plot
+        def grafico_ead_el():
+            d = indicadores_ponderados()
+            fig, ax = plt.subplots(figsize=(8.5, 3.8))
+            if not d.empty:
+                # Dibujamos por cada escenario seleccionado sin sumar años:
+                # así el gráfico muestra importes comparables por horizonte.
+                g = d.sort_values(["Año", "Escenario"])
+                etiquetas = [f"{a} {e[0]}" for a, e in
+                             zip(g["Año"], g["Escenario"])]
+                x = np.arange(len(g))
+                ax.bar(x - 0.18, g["EAD (millones CRC)"], width=0.36,
+                       label="EAD", color="#8ca5c2")
+                ax.bar(x + 0.18, g["PE (millones CRC)"], width=0.36,
+                       label="PE", color="#db7844")
+                ax.set_xticks(x, etiquetas)
+            ax.set_ylabel("Importe (millones CRC)")
+            ax.set_xlabel("Año y escenario (B: Base; A: Adverso)")
+            ax.grid(axis="y", alpha=0.17)
+            if not d.empty:
+                ax.legend(frameon=False)
+            else:
+                ax.text(0.5, 0.5, "No hay datos para esta selección",
+                        ha="center", va="center", transform=ax.transAxes)
+            ax.spines[["top", "right"]].set_visible(False)
+            fig.tight_layout()
+            return fig
+
+        @render.data_frame
+        def tabla_indicadores_agrupados():
+            d = indicadores_ponderados().copy()
+            for c in ["PD", "PC", "LGL_cartera", "LGD", "PE/EAD (%)"]:
+                d[c] = d[c].round(3)
+            for c in ["EAD (millones CRC)", "PE (millones CRC)"]:
+                d[c] = d[c].round(2)
+            d = d.rename(columns={"PD": "PD ponderada (%)", "PC": "PC ponderada (%)",
+                                  "LGL_cartera": "LGL ponderada (%)",
+                                  "LGD": "LGD ponderada (%)"})
+            return render.DataGrid(d, filters=True, width="100%")
+
+        @render.data_frame
+        def tabla_indicadores_detalle():
+            d = datos_filtrados().copy()
+            for c in ["PD", "PC", "LGL_cartera", "LGD"]:
+                d[c] = (100 * d[c]).round(3)
+            for c in ["EAD_ano_anterior_crc", "EAD_proyectada_mn",
+                      "CN_2025_crc", "CD_2025_crc", "recuperacion_cartera_crc",
+                      "EL_normal_crc", "EL_dudosa_crc", "EL_futura_crc", "EL_crc"]:
+                d[c] = (d[c] / 1e6).round(2)
+            d = d[["entidad", "categorias_bust", "escenario", "ano", "PD", "PC",
+                   "LGL_cartera", "LGD", "CN_2025_crc", "CD_2025_crc",
+                   "EAD_ano_anterior_crc", "EAD_proyectada_mn",
+                   "recuperacion_cartera_crc", "EL_normal_crc",
+                   "EL_dudosa_crc", "EL_futura_crc", "EL_crc"]]
+            return render.DataGrid(d, filters=True, width="100%", height="425px")
+
+        @render.download(filename="proyecciones_PE_PD_PC_LGD_EAD.csv")
+        def descargar_proyecciones():
+            # Exportamos datos calculados sin redondear, para que otra persona
+            # pueda rehacer las cuentas a partir del CSV.
+            yield descargar_csv(datos_filtrados())
+
+        @render.download(filename="resumen_PE_por_segmento.csv")
+        def descargar_resumen():
+            d = datos_filtrados()
+            if d.empty:
+                yield descargar_csv(pd.DataFrame())
+            else:
+                yield descargar_csv(resumir_el(d, ["escenario", "ano",
+                                                   "entidad", "categorias_bust"]))
+
+        @render.download(filename="historico_cartera_2019_2025.csv")
+        def descargar_historico():
+            yield descargar_csv(historico_filtrado())
+
+        @render.download(filename="PD_PC_historicas_cohortes.csv")
+        def descargar_tasas_historicas():
+            yield descargar_csv(tasas_por_cohorte())
+
+        @render.download(filename="sensibilidad_recuperaciones.csv")
+        def descargar_sensibilidad():
+            yield descargar_csv(datos_sensibles())
+
+        @render.download(filename="operaciones_PE_2026.csv")
+        def descargar_operaciones():
+            d = pe_operaciones_2026
+            if input.f_entidad() != "Todas":
+                d = d.loc[d["entidad"].eq(input.f_entidad())]
+            if input.f_cartera() != "Todas":
+                d = d.loc[d["categorias_bust"].eq(input.f_cartera())]
+            if input.f_escenario() != "Ambos":
+                d = d.loc[d["escenario"].eq(input.f_escenario())]
+            yield descargar_csv(d)
+
+    app = App(app_ui, server)
+
+else:
+    # Esta rama permite ejecutar únicamente el procesamiento estadístico si
+    # todavía no se instaló Shiny. Para abrir el dashboard sí hace falta.
+    app = None
+    if __name__ == "__main__":
+        print("Shiny no está instalado. Para abrir el dashboard instalá shiny y matplotlib.")
+
+
+# Si abrís el archivo con python app.py, obtendrás un resumen de resultados;
+# si lo abrís con shiny run app.py, iniciás la aplicación web.
+if __name__ == "__main__":
+    print("\nPérdida esperada consolidada (millones de colones):")
+    print(pe_consolidada.assign(
+        EL_millones=lambda d: (d["EL_crc"] / 1e6).round(2)
+    )[["escenario", "ano", "EL_millones", "EL_EAD_pct"]].to_string(index=False))
+    print("\nValidación: inventario, operaciones 2026 y total A-E conciliados.")
+    if app is not None:
+        print("Para abrir Shiny: shiny run --launch-browser app.py")

@@ -7,6 +7,9 @@ import pandas as pd
 import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.preprocessing import StandardScaler
+from scipy.optimize import minimize
+from scipy.special import expit
+import importlib.util
 
 """
 Dashboard de riesgo de crédito
@@ -1317,10 +1320,6 @@ def proyectar_pd_pc(
     restriccion de signo y penalizacion 5*beta_macro**2.
     Replica el ajuste usado en la comparacion temporal de modelos.
     """
-    import numpy as np
-    import pandas as pd
-    from scipy.optimize import minimize
-    from scipy.special import expit
 
     variables = {"PD": "tc_crc_usd", "PC": "tasa_mn_pct"}
     claves = ["entidad", "categorias_bust"]
@@ -3104,9 +3103,6 @@ controles_dashboard = construir_controles_dashboard(
 #   .\.venv\Scripts\python.exe -m pip install shiny matplotlib
 # Si ejecutamos python app.py sin Shiny instalado, las secciones 4 y 5 igual
 # se calculan y se pueden consultar; únicamente no se abre la interfaz.
-
-import importlib.util
-
 
 def formatear_crc(valor):
     """Da un formato corto a los montos: mil millones o millones de colones."""

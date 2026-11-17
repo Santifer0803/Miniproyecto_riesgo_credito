@@ -12,10 +12,9 @@ from scipy.special import expit
 import importlib.util
 
 """
-Dashboard de riesgo de crédito
+Carga y limpieza inicial de los datos
 
-Aquí se juntan todas las funciones que se usan para la que la aplicación
-se ejecute correctamente, junto con los gráficos y demás elementos.
+Aquí se cargan todas las bases de datos y se tratan, relacionándolas o limpiándolas
 """
 
 # Se guardan los nombres de las bases de datos necesarias
@@ -321,28 +320,33 @@ a lo largo del trabajo
 
 """ PD y PC históricas """
 
-
 def preparar_inventario_crediticio(
     df_operaciones, fecha_corte, excluir_btb=True, excluir_otro=True
 ):
     """
-    Prepara el inventario de operaciones crediticias para una fecha de evaluación.
+    Prepara el inventario crediticio para una fecha de corte, aplicando
+    filtros de exclusión y verificando que no existan operaciones duplicadas.
 
     Parámetros
     ----------
-    df_operaciones : DataFrame
+    df_operaciones : pd.DataFrame
         Base histórica de operaciones crediticias.
     fecha_corte : str
-        Fecha de evaluación en formato YYYY-MM-DD.
-    excluir_btb : bool
-        Indica si se excluyen las operaciones back-to-back.
-    excluir_otro : bool
-        Indica si se excluyen las operaciones con categoría Otro.
+        Fecha de evaluación en formato 'YYYY-MM-DD'.
+    excluir_btb : bool, opcional
+        Si es True, excluye las operaciones back-to-back. Por defecto, True.
+    excluir_otro : bool, opcional
+        Si es True, excluye las operaciones de categoría 'Otro'. Por defecto, True.
 
     Retorna
     -------
-    DataFrame
-        Inventario de operaciones en la fecha indicada.
+    pd.DataFrame
+        Inventario crediticio filtrado para la fecha de corte indicada.
+
+    Raises
+    ------
+    ValueError
+        Si existen identificadores de operación duplicados en el inventario.
     """
 
     fecha_corte = pd.Timestamp(fecha_corte)
@@ -362,8 +366,6 @@ def preparar_inventario_crediticio(
 
     return inventario
 
-
-# Documentar
 def diagnosticar_salidas(
     df_operaciones,
     inventario_inicial,
@@ -372,10 +374,29 @@ def diagnosticar_salidas(
     fecha_final,
 ):
     """
-    Diagnostica operaciones del inventario inicial ausentes en el
-    inventario final.
+    Identifica las operaciones presentes en el inventario inicial que
+    están ausentes en el inventario final y recupera su último registro
+    disponible dentro del período analizado.
 
-    No clasifica incumplimientos ni curas.
+    Parámetros
+    ----------
+    df_operaciones : pd.DataFrame
+        Base histórica de operaciones con sus fechas y motivos de salida.
+    inventario_inicial : pd.DataFrame
+        Inventario de operaciones al inicio del período.
+    inventario_final : pd.DataFrame
+        Inventario de operaciones al final del período.
+    fecha_inicial : str o datetime
+        Fecha inicial del período de análisis.
+    fecha_final : str o datetime
+        Fecha final del período de análisis.
+
+    Retorna
+    -------
+    pd.DataFrame
+        Último registro disponible de cada operación ausente, incluyendo
+        el motivo de salida registrado. Si no existe un motivo, se asigna
+        "SIN MOTIVO REGISTRADO".
     """
 
     fecha_inicial = pd.Timestamp(fecha_inicial)
@@ -404,16 +425,38 @@ def diagnosticar_salidas(
 
     return ultimos_registros
 
-
-# Documentar
 def resumir_modificaciones_crediticias(
     df_operaciones, fecha_corte, meses_ventana=12
 ):
     """
-    Resume las modificaciones crediticias por operación utilizando información
-    disponible hasta fecha_corte.
+    Resume las modificaciones crediticias realizadas por operación
+    dentro de una ventana temporal anterior a la fecha de corte.
 
-    Retorna una fila por operación modificada dentro de la ventana seleccionada.
+    Identifica modificaciones asociadas con dificultades financieras,
+    mora previa superior a 60 días, COVID-19 y aumentos del saldo
+    superiores al 2 %.
+
+    Parámetros
+    ----------
+    df_operaciones : pd.DataFrame
+        Base histórica de operaciones crediticias que contiene
+        la información de las modificaciones realizadas.
+
+    fecha_corte : str o pd.Timestamp
+        Fecha máxima hasta la cual se consideran las modificaciones.
+
+    meses_ventana : int, opcional
+        Número de meses anteriores a la fecha de corte que se
+        consideran en el análisis. Por defecto, 12 meses.
+
+    Retorna
+    -------
+    resumen : pd.DataFrame
+        DataFrame con una fila por operación modificada durante
+        la ventana seleccionada. Contiene el número de modificaciones,
+        indicadores de dificultad financiera, mora previa superior
+        a 60 días, COVID-19, crecimiento del saldo superior al 2 %
+        y fecha de la última modificación.
     """
 
     fecha_corte = pd.Timestamp(fecha_corte)
@@ -460,16 +503,31 @@ def resumir_modificaciones_crediticias(
 
     return resumen
 
-
-# Documentar
 def construir_indicadores_crediticios(
     df_operaciones, fecha_corte, meses_modificaciones=12
 ):
     """
-    Construye indicadores crediticios por operación
-    para una fecha de evaluación.
+    Construye indicadores de deterioro crediticio por operación
+    a una fecha de corte, considerando mora, cobro judicial y
+    modificaciones recientes. No asigna el estado BUST definitivo.
 
-    No asigna todavía el estado BUST definitivo.
+    Parámetros
+    ----------
+    df_operaciones : pd.DataFrame
+        Base histórica de operaciones crediticias.
+    fecha_corte : str o pd.Timestamp
+        Fecha de evaluación de los indicadores crediticios.
+    meses_modificaciones : int, opcional
+        Número de meses considerados para identificar modificaciones
+        recientes. Por defecto, 12 meses.
+
+    Retorna
+    -------
+    indicadores : pd.DataFrame
+        Inventario de operaciones a la fecha de corte, enriquecido
+        con información de modificaciones e indicadores de mora,
+        cobro judicial, dificultad financiera, crecimiento del saldo
+        y deterioro crediticio básico y ampliado.
     """
 
     fecha_corte = pd.Timestamp(fecha_corte)
@@ -521,16 +579,37 @@ def construir_indicadores_crediticios(
     return indicadores
 
 
-# Documentar
 def clasificar_inventario_inicial_crediticio(
     df_operaciones, fecha_corte, meses_ventana=12
 ):
     """
-    Clasifica operaciones en T0 para PD y PC.
+    Clasifica las operaciones del inventario inicial en estado Normal
+    o Dudoso para el cálculo de PD y PC, según sus condiciones de
+    morosidad, cobro judicial, modificaciones y eventos de salida.
 
-    Excluye back-to-back, cartera Otro y cancelaciones ocurridas en T0 o antes.
+    Excluye operaciones back-to-back, cartera Otro y cancelaciones,
+    utilizando únicamente información disponible hasta la fecha de corte.
 
-    La clasificación no utiliza información posterior a la fecha de corte.
+    Parameters
+    ----------
+    df_operaciones : pd.DataFrame
+        Base histórica de operaciones crediticias con información
+        de saldos, morosidad, modificaciones y eventos de salida.
+
+    fecha_corte : str o pd.Timestamp
+        Fecha de referencia (T0) para construir y clasificar
+        el inventario inicial.
+
+    meses_ventana : int, default 12
+        Número de meses anteriores a la fecha de corte utilizados
+        para identificar modificaciones crediticias.
+
+    Returns
+    -------
+    inventario : pd.DataFrame
+        Inventario de operaciones vigentes en T0, con indicadores
+        de deterioro, resumen de modificaciones y clasificación
+        crediticia inicial (Normal o Dudoso).
     """
 
     fecha_corte = pd.Timestamp(fecha_corte)
@@ -612,17 +691,34 @@ def clasificar_inventario_inicial_crediticio(
 
     return inventario
 
-
-# Documentar
 def evaluar_operaciones_t12(
     df_operaciones, inventario_t0, fecha_t0, meses_horizonte=12
 ):
     """
-    Evalúa el estado observado de las operaciones del inventario inicial
-    al cierre del horizonte.
+    Evalúa el estado de las operaciones del inventario inicial al cierre
+    del horizonte, identificando condiciones básicas de deterioro y
+    eventos de salida. Conserva una fila por operación y no incorpora
+    todavía el ajuste por modificaciones.
 
-    Conserva una fila por operación inicial.
-    No aplica todavía el ajuste de modificaciones.
+    Parámetros
+    ----------
+    df_operaciones : pd.DataFrame
+        Base histórica con las observaciones mensuales de las operaciones.
+    inventario_t0 : pd.DataFrame
+        Inventario inicial con identificadores, entidad, categoría BUST
+        y estado inicial de cada operación.
+    fecha_t0 : str o pd.Timestamp
+        Fecha de corte inicial de la evaluación.
+    meses_horizonte : int, opcional
+        Número de meses del horizonte de evaluación (por defecto, 12).
+
+    Retorna
+    -------
+    pd.DataFrame
+        Inventario inicial enriquecido con la última observación disponible,
+        indicadores de seguimiento, permanencia al cierre, mora, cobro
+        judicial, eventos de salida y clasificación básica de deterioro
+        al horizonte evaluado.
     """
 
     fecha_t0 = pd.Timestamp(fecha_t0)
@@ -707,24 +803,39 @@ def evaluar_operaciones_t12(
 
     return resultado
 
-
-# Documentar
 def evaluar_crecimiento_modificaciones(
     df_operaciones, seguimiento_t12, fecha_t0
 ):
+    
     """
-    Evalúa las modificaciones crediticias en la ventana
-    de 12 meses antes y 12 meses después de T0.
-
-    Para operaciones con modificaciones:
-    - Cuenta las modificaciones.
-    - Obtiene la mora previa a la primera modificación.
-    - Obtiene el saldo previo a la última modificación.
-    - Compara ese saldo con el saldo en T+12.
-    - Aplica la regla de crecimiento superior al 2%.
-
-    Conserva los casos sin información suficiente
-    como no evaluables.
+    Evalúa las modificaciones crediticias realizadas durante los 12 meses
+    anteriores y posteriores a T0, identificando su frecuencia, la mora
+    previa y el crecimiento del saldo hasta T+12. Determina si dicho
+    crecimiento supera el 2% y señala los casos no evaluables.
+    
+    Parámetros
+    ----------
+    df_operaciones : pd.DataFrame
+        Base histórica de operaciones crediticias que contiene las fechas,
+        modificaciones, mora previa y saldos correspondientes.
+    
+    seguimiento_t12 : pd.DataFrame
+        Base de seguimiento de las operaciones hasta T+12, que incluye
+        su identificador y el indicador de reporte en dicho corte.
+    
+    fecha_t0 : str o pd.Timestamp
+        Fecha de corte inicial utilizada para definir la ventana de
+        evaluación de 12 meses anteriores y posteriores.
+    
+    Retorna
+    -------
+    resultado : pd.DataFrame
+        DataFrame que conserva la información de seguimiento y agrega
+        el número y grupo de modificaciones, la mora previa a la primera
+        modificación, el saldo previo a la última modificación, el saldo
+        en T+12, el crecimiento porcentual y los indicadores de
+        evaluabilidad, crecimiento superior al 2%, clasificación como
+        dudoso por crecimiento y modificaciones pendientes de revisión.
     """
 
     fecha_t0 = pd.Timestamp(fecha_t0)
@@ -898,23 +1009,36 @@ def evaluar_crecimiento_modificaciones(
 
     return resultado
 
-
-# Documentar
 def clasificar_operaciones_t12(evaluacion_mods, fecha_t12, revision_ref=None):
     """
-    Consolida la clasificación crediticia en T+12.
+    Clasifica las operaciones crediticias en T+12 como Normal, Dudoso,
+    Pendiente o Cancelado, considerando el deterioro básico, las
+    modificaciones crediticias y los eventos de salida. Permite
+    reclasificar provisionalmente refinanciaciones verificadas.
 
-    Estados:
-    - Normal
-    - Dudoso
-    - Pendiente
-    - Cancelado
+    Parámetros
+    ----------
+    evaluacion_mods : pd.DataFrame
+        Base de operaciones con indicadores de deterioro, modificaciones,
+        seguimiento y eventos de salida evaluados en T+12.
 
-    Aplica:
-    1. Deterioro básico.
-    2. Evaluación de modificaciones.
-    3. Tratamiento separado de salidas.
-    4. Identificación de casos no evaluables.
+    fecha_t12 : str o pd.Timestamp
+        Fecha de cierre del período de evaluación T+12.
+
+    revision_ref : pd.DataFrame, opcional
+        Base de verificación de operaciones refinanciadas y sus sucesoras.
+        Permite reclasificar como normales aquellas refinanciaciones
+        pendientes cuya sucesora cumple los criterios establecidos.
+        Por defecto es None.
+
+    Retorna
+    -------
+    resultado : pd.DataFrame
+        Base de operaciones con su clasificación consolidada en T+12,
+        el motivo de clasificación y los indicadores de trazabilidad.
+        Incluye las columnas estado_t12, motivo_t12,
+        dudoso_por_modificaciones, modificacion_no_evaluable y
+        cancelacion_no_dudosa.
     """
 
     fecha_t12 = pd.Timestamp(fecha_t12)
@@ -1089,16 +1213,40 @@ def clasificar_operaciones_t12(evaluacion_mods, fecha_t12, revision_ref=None):
 
     return resultado
 
-
-# Documentar
 def calcular_pd_pc_historicas(
     clasificacion, agrupar_por=("entidad", "categorias_bust")
 ):
     """
-    Calcula PD y PC históricas por número de operaciones.
+    Calcula la Probabilidad de Incumplimiento (PD) y la Probabilidad
+    de Cura (PC) históricas a partir de las transiciones de estado
+    de las operaciones durante un horizonte de 12 meses.
 
-    Las operaciones pendientes permanecen en el
-    denominador y se reportan separadamente.
+    El cálculo considera los deterioros, las recuperaciones y los
+    eventos de salida. Las operaciones pendientes permanecen en
+    los denominadores y se reportan por separado.
+
+    Parámetros
+    ----------
+    clasificacion : pd.DataFrame
+        DataFrame con la clasificación inicial (T0) y final (T+12)
+        de las operaciones, así como sus eventos de salida y las
+        variables necesarias para determinar incumplimientos y curas.
+
+    agrupar_por : tuple, opcional
+        Columnas utilizadas para agrupar los resultados.
+        Por defecto, ("entidad", "categorias_bust").
+
+    Retorna
+    -------
+    resumen : pd.DataFrame
+        DataFrame con los componentes agregados de PD y PC, el número
+        de operaciones pendientes y las tasas históricas calculadas
+        en valores decimales (PD, PC) y porcentuales (PD_pct, PC_pct).
+
+    datos : pd.DataFrame
+        Copia del DataFrame original con los indicadores individuales
+        utilizados para calcular los componentes de PD y PC, así
+        como las operaciones pendientes.
     """
 
     datos = clasificacion.copy()
@@ -1302,11 +1450,8 @@ def calcular_pd_pc_historicas(
 
     return resumen, datos
 
-
 """ PD y PC proyectadas """
 
-
-# Documentar
 def proyectar_pd_pc(
     pd_pc_app,
     df_macro_historico,
@@ -1314,11 +1459,51 @@ def proyectar_pd_pc(
     df_operaciones_crediticias,
     df_tipo_cambio,
 ):
-    """PD: tipo de cambio (+). PC: tasa MN (-).
+    """
+    Proyecta las probabilidades de incumplimiento (PD) y cura (PC)
+    para 2026-2028, por entidad, categoría BUST y escenario
+    macroeconómico, mediante regresiones logísticas binomiales.
 
-    Regresion logistica binomial con interceptos entidad-BUST,
-    restriccion de signo y penalizacion 5*beta_macro**2.
-    Replica el ajuste usado en la comparacion temporal de modelos.
+    Los modelos incorporan interceptos por segmento, restricciones
+    de signo y penalización del coeficiente macroeconómico.
+    Adicionalmente, proyecta el crecimiento crediticio y los saldos
+    de cartera, manteniendo la participación de cada segmento.
+
+    Parámetros
+    ----------
+    pd_pc_app : pd.DataFrame
+        Datos históricos de PD y PC por entidad, categoría BUST
+        y cohorte, incluyendo los conteos de cada transición.
+
+    df_macro_historico : pd.DataFrame
+        Variables macroeconómicas históricas utilizadas para
+        estimar los modelos y calcular las referencias de crecimiento.
+
+    df_macro_proyectado : pd.DataFrame
+        Variables macroeconómicas proyectadas por escenario
+        para los años 2026, 2027 y 2028.
+
+    df_operaciones_crediticias : pd.DataFrame
+        Información histórica de operaciones crediticias utilizada
+        para calcular los saldos y el crecimiento de la cartera.
+
+    df_tipo_cambio : pd.DataFrame
+        Tipos de cambio históricos utilizados para convertir
+        los saldos en moneda extranjera a moneda nacional.
+
+    Retorna
+    -------
+    proyecciones : pd.DataFrame
+        DataFrame con las proyecciones por entidad, categoría BUST,
+        escenario y año. Incluye las siguientes variables:
+
+        - PD: probabilidad de incumplimiento proyectada.
+        - PC: probabilidad de cura proyectada.
+        - PD_pct: PD expresada en porcentaje.
+        - PC_pct: PC expresada en porcentaje.
+        - crecimiento_pct: crecimiento anual proyectado de cartera.
+        - saldo_proyectado_mn: saldo de cartera proyectado en
+          moneda nacional.
     """
 
     variables = {"PD": "tc_crc_usd", "PC": "tasa_mn_pct"}
@@ -1541,7 +1726,6 @@ def proyectar_pd_pc(
         drop=True
     )
 
-
 # %%
 
 # ==========================================================
@@ -1610,9 +1794,28 @@ proyecciones_pd_pc = proyectar_pd_pc(
 
 """ Recuperaciones y severidad de la pérdida """
 
-
-# Documentar
 def seleccionar_garantias_admisibles(df_garantias_operaciones):
+    """
+    Selecciona las garantías admisibles según su tipo y grado de prelación.
+
+    Se consideran admisibles las garantías de los tipos permitidos que
+    tengan primer grado de prelación, así como las de segundo grado
+    cuando la misma entidad mantiene también el primer grado sobre
+    la garantía.
+
+    Parámetros
+    ----------
+    df_garantias_operaciones : pd.DataFrame
+        DataFrame con la información de las garantías asociadas a las
+        operaciones, incluyendo tipo, identificador, entidad acreedora
+        y grado de prelación.
+
+    Retorna
+    -------
+    pd.DataFrame
+        DataFrame con las garantías que cumplen los criterios de
+        admisibilidad, conservando las columnas originales.
+    """
 
     g = df_garantias_operaciones.copy()
 
@@ -1661,11 +1864,37 @@ def seleccionar_garantias_admisibles(df_garantias_operaciones):
 
     return g.drop(columns="tiene_primer_grado")
 
-
-# Documentar
 def valorar_garantias_2025(
     garantias_admisibles, df_operaciones_crediticias, df_tipo_cambio
 ):
+    """
+    Calcula el valor de las garantías admisibles al cierre de 2025,
+    considerando gravámenes preferentes, asignaciones compartidas
+    y límites de cobertura según el saldo de las operaciones.
+
+    Parámetros
+    ----------
+    garantias_admisibles : pd.DataFrame
+        Base de garantías admisibles vinculadas a las operaciones
+        crediticias, incluyendo sus valores, gravámenes y porcentajes
+        de asignación.
+
+    df_operaciones_crediticias : pd.DataFrame
+        Base de operaciones crediticias utilizada para identificar
+        las operaciones vigentes al cierre de 2025 y sus saldos.
+
+    df_tipo_cambio : pd.DataFrame
+        Base de tipos de cambio utilizada para convertir los saldos
+        y valores de las garantías a colones costarricenses.
+
+    Retorna
+    -------
+    g : pd.DataFrame
+        Base de garantías vinculadas a las operaciones elegibles,
+        con sus valores ajustados en colones y el valor final del
+        colateral asignado a cada operación, limitado por el valor
+        disponible de la garantía y el saldo de la operación.
+    """
 
     corte = pd.Timestamp("2025-12-31")
 
@@ -1798,11 +2027,36 @@ def valorar_garantias_2025(
 
     return g
 
-
-# Documentar
 def calcular_recuperaciones_historicas(
     df_operaciones_bienes_realizables, df_flujos_recuperacion
 ):
+    """
+    Calcula las recuperaciones históricas netas de los bienes adjudicados
+    y vendidos, considerando los gastos de venta y administración.
+    Genera un resumen por tipo de bien con las tasas de recuperación,
+    descuentos y plazos medianos de venta.
+
+    Parámetros
+    ----------
+    df_operaciones_bienes_realizables : pd.DataFrame
+        Base de bienes adjudicados con información sobre su valor de
+        adjudicación, venta, gastos asociados, fechas y tipo de bien.
+
+    df_flujos_recuperacion : pd.DataFrame
+        Base de flujos de recuperación con los costos históricos de
+        administración asociados a cada bien.
+
+    Retorna
+    -------
+    bienes : pd.DataFrame
+        Detalle de los bienes vendidos con sus recuperaciones netas,
+        costos de administración, plazos de venta y tasas de recuperación.
+
+    resumen : pd.DataFrame
+        Resumen agregado por tipo de bien con el número de bienes vendidos,
+        valor total de adjudicación, recuperación neta total, plazo mediano
+        de venta, tasa de recuperación y descuento de recuperación.
+    """
 
     bienes = df_operaciones_bienes_realizables.copy()
     flujos = df_flujos_recuperacion.copy()
@@ -1879,14 +2133,44 @@ def calcular_recuperaciones_historicas(
 
     return bienes, resumen
 
-
-# Documentar
 def proyectar_recuperaciones_garantias(
     garantias_valoradas,
     resumen_recuperaciones,
     df_macro_historico,
     df_macro_proyectado,
 ):
+    """
+    Proyecta el valor de las garantías y las recuperaciones esperadas
+    para 2026-2028, utilizando tasas históricas de recuperación y
+    la evolución proyectada de índices macroeconómicos.
+
+    Parámetros
+    ----------
+    garantias_valoradas : pd.DataFrame
+        Base de garantías valoradas, con su tipo, entidad,
+        categoría BUST y valor del colateral en colones.
+
+    resumen_recuperaciones : pd.DataFrame
+        Resumen por tipo de garantía con las tasas históricas
+        de recuperación y los plazos de venta estimados.
+
+    df_macro_historico : pd.DataFrame
+        Base histórica de índices macroeconómicos. Se utilizan
+        los valores de diciembre de 2025 como referencia.
+
+    df_macro_proyectado : pd.DataFrame
+        Proyecciones de índices macroeconómicos por escenario
+        y año para el período 2026-2028.
+
+    Retorna
+    -------
+    pd.DataFrame
+        Base con las recuperaciones proyectadas por entidad,
+        categoría BUST, tipo de garantía, escenario y año.
+        Incluye el valor original del colateral, el factor de
+        actualización macroeconómica, el colateral proyectado
+        y la recuperación proyectada en colones.
+    """
 
     g = garantias_valoradas.copy()
     r = resumen_recuperaciones.copy()
@@ -1963,11 +2247,37 @@ def proyectar_recuperaciones_garantias(
 
     return resultado
 
-
-# Documentar
 def descontar_recuperaciones(
     recuperaciones_proyectadas, df_operaciones_crediticias, df_tipo_cambio
 ):
+    """
+    Calcula el valor presente de las recuperaciones proyectadas,
+    utilizando tasas efectivas anuales ponderadas por saldo para
+    cada combinación de entidad y categoría de cartera.
+
+    Parámetros
+    ----------
+    recuperaciones_proyectadas : pd.DataFrame
+        DataFrame con las recuperaciones proyectadas en CRC y los
+        plazos estimados de venta en meses.
+
+    df_operaciones_crediticias : pd.DataFrame
+        DataFrame con las operaciones crediticias, sus saldos,
+        tasas efectivas anuales y clasificaciones de cartera.
+
+    df_tipo_cambio : pd.DataFrame
+        DataFrame con los tipos de cambio utilizados para convertir
+        los saldos de las operaciones a CRC.
+
+    Retorna
+    -------
+    pd.DataFrame
+        DataFrame con las recuperaciones proyectadas originales y
+        las columnas adicionales:
+        - tasa_descuento: tasa efectiva anual ponderada por saldo.
+        - factor_descuento: factor aplicado según el plazo de venta.
+        - recuperacion_vp_crc: valor presente de la recuperación en CRC.
+    """
 
     r = recuperaciones_proyectadas.copy()
     op = df_operaciones_crediticias.copy()
@@ -2036,9 +2346,29 @@ def descontar_recuperaciones(
 
     return r
 
-
-# Documentar
 def calcular_cobertura_recuperable(recuperaciones_vp, garantias_valoradas):
+    """
+    Calcula la cobertura recuperable y la pérdida dado el incumplimiento
+    (LGL) de las operaciones garantizadas, por entidad, categoría BUST,
+    escenario y año, limitando las recuperaciones al saldo garantizado.
+
+    Parámetros
+    ----------
+    recuperaciones_vp : pd.DataFrame
+        Contiene las recuperaciones a valor presente, expresadas en CRC,
+        por entidad, categoría BUST, escenario y año.
+
+    garantias_valoradas : pd.DataFrame
+        Contiene las garantías valoradas y los saldos de las operaciones
+        garantizadas, expresados en CRC.
+
+    Retorna
+    -------
+    resultado : pd.DataFrame
+        Contiene, por entidad, categoría BUST, escenario y año, el saldo
+        garantizado, las recuperaciones a valor presente, las recuperaciones
+        limitadas al saldo, la cobertura recuperable y la LGL garantizada.
+    """
 
     # Saldo de operaciones con garantías, sin duplicarlas
     saldos = garantias_valoradas[
@@ -2080,11 +2410,36 @@ def calcular_cobertura_recuperable(recuperaciones_vp, garantias_valoradas):
 
     return resultado
 
-
-# Documentar
 def calcular_lgl_cartera(
     cobertura_recuperable, df_operaciones_crediticias, df_tipo_cambio
 ):
+    """
+    Calcula la pérdida dado el incumplimiento (LGL) por entidad y
+    categoría de cartera, considerando las recuperaciones estimadas
+    de garantías respecto al saldo total de la cartera.
+
+    Parámetros
+    ----------
+    cobertura_recuperable : pd.DataFrame
+        Base con las recuperaciones limitadas de garantías, expresadas
+        en colones, por entidad y categoría de cartera.
+
+    df_operaciones_crediticias : pd.DataFrame
+        Base de operaciones crediticias utilizada para calcular los
+        saldos de cartera al 31 de diciembre de 2025. Se excluyen
+        operaciones back-to-back y categorías "Otro" u "Otros".
+
+    df_tipo_cambio : pd.DataFrame
+        Base de tipos de cambio utilizada para convertir los saldos
+        de las operaciones a colones al 31 de diciembre de 2025.
+
+    Retorna
+    -------
+    pd.DataFrame
+        Base con los saldos totales de cartera, las recuperaciones
+        limitadas al saldo de cada segmento y la LGL calculada
+        por entidad y categoría de cartera.
+    """
 
     op = df_operaciones_crediticias.copy()
     tc = df_tipo_cambio.copy()
@@ -2146,14 +2501,42 @@ def calcular_lgl_cartera(
 
     return resultado
 
-
-# Documentar
 def valorar_bienes_pendientes(
     df_operaciones_bienes_realizables,
     resumen_recuperaciones,
     df_macro_historico,
     df_macro_proyectado,
 ):
+    """
+    Proyecta el valor de recuperación de los bienes adjudicados pendientes
+    de venta para los años 2026-2028, considerando tasas históricas de
+    recuperación, escenarios macroeconómicos y fracciones asignadas.
+
+    Parámetros
+    ----------
+    df_operaciones_bienes_realizables : pd.DataFrame
+        Base de bienes adjudicados, con su tipo, valor de adjudicación,
+        estado de venta y fracción asignada.
+
+    resumen_recuperaciones : pd.DataFrame
+        Resumen de tasas históricas de recuperación y plazos de venta
+        por tipo de bien.
+
+    df_macro_historico : pd.DataFrame
+        Indicadores macroeconómicos históricos utilizados como referencia
+        para ajustar el valor de los bienes, con base en diciembre de 2025.
+
+    df_macro_proyectado : pd.DataFrame
+        Indicadores macroeconómicos proyectados por escenario y año
+        para el período 2026-2028.
+
+    Retorna
+    -------
+    resultado : pd.DataFrame
+        Base de bienes pendientes de venta con su recuperación proyectada
+        por escenario y año, incorporando el ajuste macroeconómico,
+        la tasa histórica de recuperación y la fracción asignada.
+    """
 
     bienes = df_operaciones_bienes_realizables.copy()
     tasas = resumen_recuperaciones.copy()
@@ -2231,9 +2614,30 @@ def valorar_bienes_pendientes(
 
     return resultado
 
-
-# Documentar
 def descontar_bienes_pendientes(bienes_pendientes, df_operaciones_crediticias):
+    """
+    Calcula el valor presente de las recuperaciones proyectadas de bienes
+    pendientes de venta, utilizando las tasas efectivas anuales de las
+    operaciones crediticias al cierre de 2025. Cuando no se dispone de
+    una tasa, utiliza la mediana histórica de la entidad correspondiente.
+
+    Parámetros
+    ----------
+    bienes_pendientes : pd.DataFrame
+        DataFrame con los bienes pendientes de venta, sus recuperaciones
+        proyectadas y los plazos estimados de venta en meses.
+
+    df_operaciones_crediticias : pd.DataFrame
+        DataFrame con el historial de operaciones crediticias, incluyendo
+        las tasas efectivas anuales, entidades y fechas de observación.
+
+    Retorna
+    -------
+    pd.DataFrame
+        DataFrame de bienes pendientes con las tasas de descuento,
+        los factores de descuento y las recuperaciones proyectadas
+        expresadas a valor presente en colones (recuperacion_vp_crc).
+    """
 
     b = bienes_pendientes.copy()
     op = df_operaciones_crediticias.copy()
@@ -2278,9 +2682,28 @@ def descontar_bienes_pendientes(bienes_pendientes, df_operaciones_crediticias):
 
     return b
 
-
-# Documentar
 def actualizar_avaluos_terrenos(garantias_admisibles, df_macro_historico):
+    """
+    Actualiza el valor de las garantías de tipo terreno a diciembre de 2025,
+    utilizando la variación histórica del índice de precios de inmuebles.
+
+    Parámetros
+    ----------
+    garantias_admisibles : pd.DataFrame
+        Base de garantías admisibles con el tipo de garantía, la fecha
+        del avalúo y el monto máximo de cobertura.
+
+    df_macro_historico : pd.DataFrame
+        Base de variables macroeconómicas históricas que contiene
+        las fechas y el índice de precios de inmuebles.
+
+    Retorna
+    -------
+    pd.DataFrame
+        Base de garantías con el monto máximo de cobertura actualizado
+        para terrenos y el factor de actualización aplicado. Las demás
+        garantías conservan su monto original.
+    """
 
     g = garantias_admisibles.copy()
     mh = df_macro_historico.copy()
@@ -2327,9 +2750,30 @@ def actualizar_avaluos_terrenos(garantias_admisibles, df_macro_historico):
 
     return g.drop(columns=["mes", "indice_inmuebles"])
 
-
-# Documentar
 def preparar_insumos_secciones_4_5(proyecciones_pd_pc, lgl_cartera):
+    """
+    Prepara los insumos para las secciones 4 y 5, integrando las
+    proyecciones de PD y PC con los resultados de LGL de la sección 3.
+    Calcula la LGD ajustada por cura y define la exposición proyectada.
+
+    Parámetros
+    ----------
+    proyecciones_pd_pc : pd.DataFrame
+        Resultados proyectados de PD, PC y saldos por entidad,
+        categoría BUST, escenario y año.
+
+    lgl_cartera : pd.DataFrame
+        Resultados de LGL, saldos garantizados y recuperaciones
+        de cartera por entidad, categoría BUST, escenario y año.
+
+    Retorna
+    -------
+    pd.DataFrame
+        Base integrada con PD, PC, LGL, LGD ajustada por cura y
+        exposición proyectada en moneda nacional (EAD), ordenada
+        por entidad, categoría BUST, escenario y año.
+
+    """
 
     claves = ["entidad", "categorias_bust", "escenario", "ano"]
 
@@ -2362,7 +2806,6 @@ def preparar_insumos_secciones_4_5(proyecciones_pd_pc, lgl_cartera):
     insumos["EAD_proyectada_mn"] = insumos["saldo_proyectado_mn"]
 
     return insumos.sort_values(claves).reset_index(drop=True)
-
 
 # %%
 
@@ -2480,15 +2923,16 @@ del variables_eliminar, nombre
 
 # %%
 
-"""4. Pérdida esperada"""
+""" Pérdida esperada """
 
-# En esta parte ya no volvemos a estimar la PD, la PC ni las recuperaciones.
-# Esos cálculos los hicieron las secciones anteriores y están reunidos en
-# insumos_secciones_4_5. Lo que nos faltaba era construir la exposición que
-# corresponde a cada año y aplicar la fórmula de pérdida esperada del BUST.
-# Para 2026 hay que separar créditos normales y dudosos a diciembre de 2025;
-# para 2027 y 2028 se utiliza la EAD proyectada del año anterior.
-
+"""
+En esta parte ya no volvemos a estimar la PD, la PC ni las recuperaciones.
+Esos cálculos los hicieron las secciones anteriores y están reunidos en
+insumos_secciones_4_5. Lo que nos faltaba era construir la exposición que
+corresponde a cada año y aplicar la fórmula de pérdida esperada del BUST.
+Para 2026 hay que separar créditos normales y dudosos a diciembre de 2025;
+para 2027 y 2028 se utiliza la EAD proyectada del año anterior.
+"""
 
 def construir_saldos_iniciales_pe(operaciones, tipos_cambio, fecha="2025-12-31"):
     """Obtiene CN, CD y número de operaciones por entidad y cartera BUST.
@@ -2776,8 +3220,8 @@ def calcular_detalle_operaciones_2026(inventario, datos_el):
     return detalle
 
 
-# Estos objetos quedan disponibles para las siguientes secciones, Shiny y
-# para consultar con Python -i app.py. No imprimimos las miles de filas.
+# Estos objetos quedan disponibles para las siguientes secciones
+# No imprimimos las miles de filas.
 saldos_iniciales_2025, inventario_el_2025 = construir_saldos_iniciales_pe(
     df_operaciones_crediticias, df_tipo_cambio
 )
@@ -2793,14 +3237,16 @@ pe_operaciones_2026 = calcular_detalle_operaciones_2026(
 
 # %%
 
-"""5. Escenarios y sensibilidad"""
+""" Escenarios y sensibilidad """
 
-# La comparación Base vs. Adverso se calcula a partir de las mismas pérdidas
-# que acabamos de obtener. No ajustamos ni recalibramos PD y PC aquí, porque
-# hacerlo ya sería cambiar los modelos de nuestros compañeros.
-# Para sensibilidad elegimos un solo supuesto: un RECORTE ADICIONAL a las
-# recuperaciones netas, por encima del ajuste macroeconómico ya incluido.
-# Es decir, recorte=0 reproduce exactamente el modelo recibido.
+"""
+La comparación Base vs. Adverso se calcula a partir de las mismas pérdidas
+que acabamos de obtener. No ajustamos ni recalibramos PD y PC aquí, porque
+hacerlo ya sería cambiar los modelos de nuestros compañeros.
+Para sensibilidad elegimos un solo supuesto: un RECORTE ADICIONAL a las
+recuperaciones netas, por encima del ajuste macroeconómico ya incluido.
+Es decir, recorte=0 reproduce exactamente el modelo recibido.
+"""
 
 
 def calcular_sensibilidad_recuperaciones(datos_el, recorte_pct=0):
@@ -2950,12 +3396,16 @@ macro_para_dashboard = (
 
 # %%
 
-"""Datos históricos y auditoría que alimentan el dashboard"""
+""" Datos históricos y auditoría que alimentan el dashboard """
 
-# El histórico que mostramos no es otra simulación. Sale de las observaciones
-# mensuales que ya estaban en la base de operaciones. Las filtramos con el
-# mismo universo BUST que usamos en los cálculos de la PE: dejamos fuera las
-# operaciones back-to-back y las etiquetadas como Otro.
+"""
+El histórico que mostramos no es otra simulación. Sale de las observaciones
+mensuales que ya estaban en la base de operaciones. Las filtramos con el
+mismo universo BUST que usamos en los cálculos de la PE: dejamos fuera las
+operaciones back-to-back y las etiquetadas como Otro.
+"""
+
+
 def preparar_cartera_historica_dashboard(operaciones, tipos_cambio):
     """Resume saldos y cantidades mensuales de 2019 a 2025 en colones.
 
@@ -3093,16 +3543,18 @@ controles_dashboard = construir_controles_dashboard(
 
 # %%
 
-"""Dashboard interactivo con Shiny para Python"""
+""" Dashboard interactivo con Shiny para Python """
 
-# Usamos Shiny porque permite trabajar con filtros y resultados reactivos,
-# bastante parecido a Shiny de R. La aplicación se ejecuta, desde la carpeta
-# del repositorio, con:
-#   .\.venv\Scripts\shiny.exe run --reload --launch-browser app.py
-# Para instalar las librerías adicionales una sola vez en esa misma carpeta:
-#   .\.venv\Scripts\python.exe -m pip install shiny matplotlib
-# Si ejecutamos python app.py sin Shiny instalado, las secciones 4 y 5 igual
-# se calculan y se pueden consultar; únicamente no se abre la interfaz.
+"""
+Usamos Shiny porque permite trabajar con filtros y resultados reactivos,
+bastante parecido a Shiny de R. La aplicación se ejecuta, desde la carpeta
+del repositorio, con:
+.\.venv\Scripts\shiny.exe run --reload --launch-browser app.py
+Para instalar las librerías adicionales una sola vez en esa misma carpeta:
+.\.venv\Scripts\python.exe -m pip install shiny matplotlib
+Si ejecutamos python app.py sin Shiny instalado, las secciones 4 y 5 igual
+se calculan y se pueden consultar; únicamente no se abre la interfaz.
+"""
 
 def formatear_crc(valor):
     """Da un formato corto a los montos: mil millones o millones de colones."""
@@ -4084,3 +4536,22 @@ if __name__ == "__main__":
     print("\nValidación: inventario, operaciones 2026 y total A-E conciliados.")
     if app is not None:
         print("Para abrir Shiny: shiny run --launch-browser app.py")
+
+if __name__ == "__main__":
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    ruta_app = Path.cwd() / "app.py"
+
+    subprocess.Popen([
+        sys.executable,
+        "-m",
+        "shiny",
+        "run",
+        "--launch-browser",
+        str(ruta_app)
+    ])
+
+
+

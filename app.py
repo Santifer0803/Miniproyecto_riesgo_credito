@@ -3781,13 +3781,10 @@ if importlib.util.find_spec("shiny") is not None:
     "Escenarios",
     ui.card(
         ui.card_header("Lectura de resultados y señales atípicas"),
-        ui.div(
-    ui.output_text("texto_interpretacion"),
-    style="white-space: pre-wrap; font-family: inherit;"
-),
+ui.output_plot("grafico_comparacion_escenarios", height="350px"),
         ui.p(
-            "Esta lectura resume relaciones del escenario y no "
-            "prueba causalidad estadística.",
+            " "
+            " ",
             class_="explicacion"
         ),
     ),
@@ -4167,6 +4164,140 @@ if importlib.util.find_spec("shiny") is not None:
                 "desempleo o inflación en PD y PC."
             )
             return "\n".join(texto)
+
+        @render.plot
+        def grafico_comparacion_escenarios():
+
+            # Se utilizan los datos de ambos escenarios,
+            # respetando los filtros del dashboard.
+            d = datos_ambos_escenarios()
+
+            fig, ax = plt.subplots(figsize=(10, 4))
+
+            if d.empty:
+                ax.text(
+                    0.5, 0.5,
+                    "No hay datos para los filtros seleccionados.",
+                    ha="center", va="center",
+                    transform=ax.transAxes
+                )
+                ax.axis("off")
+                return fig
+
+            # Resumir la pérdida esperada por año y escenario.
+            anuales = resumir_el(d, ["ano", "escenario"])
+
+            tabla = anuales.pivot(
+                index="ano",
+                columns="escenario",
+                values="EL_crc"
+            ).sort_index()
+
+            # Conservar años con información de ambos escenarios.
+            tabla = tabla.reindex(columns=["Base", "Adverso"])
+            tabla = tabla.dropna(subset=["Base", "Adverso"])
+
+            if tabla.empty:
+                ax.text(
+                    0.5, 0.5,
+                    "No hay resultados comparables entre escenarios.",
+                    ha="center", va="center",
+                    transform=ax.transAxes
+                )
+                ax.axis("off")
+                return fig
+
+            # Convertir colones a miles de millones de colones.
+            base = tabla["Base"].to_numpy(dtype=float) / 1e9
+            adverso = tabla["Adverso"].to_numpy(dtype=float) / 1e9
+
+            anios = tabla.index.astype(str).tolist()
+
+            x = np.arange(len(anios))
+            ancho = 0.32
+
+            # Barras de ambos escenarios.
+            barras_base = ax.bar(
+                x - ancho / 2,
+                base,
+                ancho,
+                label="Base",
+                color="#2C68AF"
+            )
+
+            barras_adverso = ax.bar(
+                x + ancho / 2,
+                adverso,
+                ancho,
+                label="Adverso",
+                color="#E07B45"
+            )
+
+            # Mostrar el importe sobre cada barra.
+            for barras in [barras_base, barras_adverso]:
+                for barra in barras:
+                    valor = barra.get_height()
+
+                    ax.annotate(
+                        f"{valor:.2f}",
+                        xy=(
+                            barra.get_x() + barra.get_width() / 2,
+                            valor
+                        ),
+                        xytext=(0, 4),
+                        textcoords="offset points",
+                        ha="center",
+                        va="bottom",
+                        fontsize=9
+                    )
+
+            # Mostrar la variación porcentual de cada año.
+            for i in range(len(anios)):
+
+                if base[i] > 0:
+                    variacion = (
+                        adverso[i] / base[i] - 1
+                    ) * 100
+
+                    altura = max(base[i], adverso[i])
+
+                    ax.annotate(
+                        f"{variacion:+.2f} %",
+                        xy=(x[i], altura),
+                        xytext=(0, 22),
+                        textcoords="offset points",
+                        ha="center",
+                        va="bottom",
+                        fontsize=10,
+                        fontweight="bold"
+                    )
+
+            # Presentación del gráfico.
+            ax.set_xticks(x)
+            ax.set_xticklabels(anios)
+
+            ax.set_ylabel(
+                "Pérdida esperada (miles de millones de CRC)"
+            )
+            ax.set_xlabel("Año de proyección")
+
+            ax.set_title(
+                "Comparación de pérdida esperada: Base y Adverso",
+                fontsize=12,
+                pad=18
+            )
+
+            ax.legend(loc="upper right")
+            ax.grid(axis="y", alpha=0.2)
+            ax.set_axisbelow(True)
+
+            # Espacio para las etiquetas porcentuales.
+            maximo = max(np.max(base), np.max(adverso))
+            ax.set_ylim(0, maximo * 1.30 if maximo > 0 else 1)
+
+            fig.tight_layout()
+
+            return fig
 
         @render.plot
         def grafico_macro():

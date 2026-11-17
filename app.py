@@ -5,11 +5,12 @@
 # Se agregan las librerías correspondientes
 import pandas as pd
 import numpy as np
-from sklearn.linear_model import LogisticRegression
-from sklearn.preprocessing import StandardScaler
 from scipy.optimize import minimize
 from scipy.special import expit
 import importlib.util
+import subprocess
+import sys
+from pathlib import Path
 
 """
 Carga y limpieza inicial de los datos
@@ -4538,9 +4539,6 @@ if __name__ == "__main__":
         print("Para abrir Shiny: shiny run --launch-browser app.py")
 
 if __name__ == "__main__":
-    import subprocess
-    import sys
-    from pathlib import Path
 
     ruta_app = Path.cwd() / "app.py"
 

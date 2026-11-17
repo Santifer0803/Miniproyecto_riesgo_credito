@@ -19,7 +19,6 @@ B.
 *pandas*: Manejo de *dataframes*.
 *scipy*: Algoritmos de optimización.
 *shiny*: Creación del dashboard.
-*sklearn*: Escaladores y modelos de regresión logística.
 *subprocess*: Ejecutar comandos externos.
 *sys*: Interacción con el sistema y entorno del programa.
 

@@ -3187,7 +3187,7 @@ if importlib.util.find_spec("shiny") is not None:
             ui.input_select("f_ano", "Año de proyección",
                             choices=["2026", "2027", "2028", "Todos"],
                             selected="2026"),
-            ui.input_select("f_escenario", "Escenario que querés ver",
+            ui.input_select("f_escenario", "Escenarios disponibles",
                             choices=["Ambos", "Base", "Adverso"],
                             selected="Base"),
             ui.input_select("f_entidad", "Entidad financiera",

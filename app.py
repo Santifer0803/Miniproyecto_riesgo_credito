@@ -3325,13 +3325,24 @@ if importlib.util.find_spec("shiny") is not None:
                              "El filtro de año no cambia esta tabla.", class_="pie-grafico")),
             ),
             ui.nav_panel(
-                "Escenarios",
-                ui.card(ui.card_header("Lectura de resultados y señales atípicas"),
-                        ui.output_code("texto_interpretacion"),
-                        ui.p("Esta lectura resume relaciones del escenario y no "
-                             "prueba causalidad estadística.", class_="explicacion")),
-                ui.card(ui.card_header("Diferencia entre Adverso y Base"),
-                        ui.output_data_frame("tabla_comparacion")),
+    "Escenarios",
+    ui.card(
+        ui.card_header("Lectura de resultados y señales atípicas"),
+        ui.div(
+    ui.output_text("texto_interpretacion"),
+    style="white-space: pre-wrap; font-family: inherit;"
+),
+        ui.p(
+            "Esta lectura resume relaciones del escenario y no "
+            "prueba causalidad estadística.",
+            class_="explicacion"
+        ),
+    ),
+    ui.card(
+        ui.card_header("Diferencia entre Adverso y Base"),
+        ui.output_data_frame("tabla_comparacion")
+    ),
+ 
                 ui.card(ui.card_header("Trayectorias macroeconómicas suministradas"),
                         ui.input_select(
                             "f_macro", "Indicador macroeconómico",
@@ -3446,12 +3457,10 @@ if importlib.util.find_spec("shiny") is not None:
 10. La PE es una estimación del ejercicio sintético, no una pérdida realizada ni
     una provisión contable que deba ser idéntica a la estimación registrada.
 
-### Fuentes del grupo
+### Fuentes
 
-- *Instrucciones para mini proyecto de crédito*, apartados 4.1, 4.2 y 5.
-- *Mini proyecto de crédito - Riesgos en entidades financieras I*, apartado
-  de supuestos de PD, PC, garantías, recuperaciones y LGL.
-- Bases sintéticas y funciones anteriores de `app.py`.
+- Reglamento de cálculo de carteras BUST.
+- Bases sintéticas y funciones desarrolladas en `app.py`.
 
 ### Lectura de las tablas históricas y los controles
 
